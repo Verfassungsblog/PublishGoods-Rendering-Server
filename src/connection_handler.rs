@@ -12,6 +12,8 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
     let request_storage = storage.request_queue.clone();
     let status_storage = storage.request_status.clone();
 
+    println!("Connection established");
+
     // Get rendering request
     let mut rendering_request = match vb_exchange::read_message(&mut tls_stream).await{
         Ok(msg) => {
@@ -42,6 +44,8 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
     };
 
     if !template_stored{
+        println!("Template not stored, requesting from main server");
+
         // Update status
         if let Some(status) = status_storage.write().unwrap().get_mut(&rendering_request.request_id){
             *status = RenderingStatus::RequestingTemplate
@@ -67,6 +71,7 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
                 return;
             }
         };
+        println!("Received template data");
         if template_data.template_id != rendering_request.template_id || template_data.template_version_id != rendering_request.template_version_id{
             eprintln!("Received unexpected template data, closing connection.");
             let _ = vb_exchange::send_message(&mut tls_stream, Message::CommunicationError(CommunicationError::WrongTemplateDataSend)).await;
@@ -86,6 +91,8 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
     }
 
     if let FilesOnMemoryOrHarddrive::Memory(mem) = rendering_request.project_uploaded_files{
+        println!("Writing uploads to filesystem");
+
         let id = uuid::Uuid::new_v4();
         let path = PathBuf::from(format!("temp/{}", id));
 
@@ -103,6 +110,7 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
 
     request_storage.write().unwrap().push_front(rendering_request);
 
+
     // Fetch status of our rendering_request and send status updates
     loop{
         let status = match status_storage.read().unwrap().get(&request_id){
@@ -111,7 +119,7 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
                 RenderingStatus::Failed(RenderingError::Other("Not Found".to_string()))
             }
         };
-        //println!("Debug: Status {:?}", status);
+        println!("Debug: Status {:?}", status);
         match status{
             // break if finished or failed
             RenderingStatus::Finished(_) => {

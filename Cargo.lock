@@ -1779,7 +1779,7 @@ dependencies = [
 [[package]]
 name = "vb-exchange"
 version = "0.1.2"
-source = "git+https://git.sr.ht/~verfassungsblog/Verfassungsbooks-Exchange-Lib#7d9fb7493b442fe1f37c5f9ea5181564671a4af4"
+source = "git+https://git.sr.ht/~verfassungsblog/Verfassungsbooks-Exchange-Lib#db87a0a293ee372998250f5f21ff2c502f311c61"
 dependencies = [
  "async-recursion",
  "bincode",
