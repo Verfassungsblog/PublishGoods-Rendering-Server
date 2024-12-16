@@ -31,6 +31,8 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
         }
     };
 
+    println!("Received rendering request");
+
     let request_id = rendering_request.request_id.clone();
 
     status_storage.write().unwrap().insert(rendering_request.request_id.clone(), RenderingStatus::SendToRenderingServer);
@@ -107,6 +109,8 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
         }
         rendering_request.project_uploaded_files = FilesOnMemoryOrHarddrive::Harddrive(path);
     }
+
+    println!("Sending rendering request to rendering worker");
 
     request_storage.write().unwrap().push_front(rendering_request);
 
