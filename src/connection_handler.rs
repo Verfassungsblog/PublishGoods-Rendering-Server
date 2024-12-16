@@ -13,6 +13,7 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
     let status_storage = storage.request_status.clone();
 
     println!("Connection established");
+    eprintln!("Test eprint");
 
     // Get rendering request
     let mut rendering_request = match vb_exchange::read_message(&mut tls_stream).await{
