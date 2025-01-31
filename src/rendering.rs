@@ -55,8 +55,6 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
                     let render_request_cpy = Arc::clone(&render_request);
                     let storage_cpy2 = storage_cpy.clone();
 
-                    println!("Debug: Started rendering export format {}.", &export_format_slug);
-
                     join_set.spawn(tokio::task::spawn_blocking(move || {
                         match render_export_format(export_format_slug, Arc::clone(&storage_cpy2), Arc::clone(&render_request_cpy)){
                             Ok(res) => {
@@ -180,7 +178,6 @@ pub fn render_export_format(slug: String, storage: Arc<Storage>, request: Arc<Re
         };
         temp_directories.push(temp_directory.clone());
         rendering_log.push_str("Prepared temporary directory.");
-        println!("Debug: Prepared temporary directory under {}.", &temp_directory.to_string_lossy());
 
         // Copy files from previous export step if any
         if files_to_copy_into_next_export_steps.len() > 0{
@@ -421,7 +418,6 @@ pub fn render_pandoc_export_step(step: PandocExportStep, temp_dir: &PathBuf, ren
             let stderr = String::from_utf8(res1.stderr).unwrap_or("".to_string());
             let res = format!("Pandoc ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
             rendering_log.push_str(&res);
-            println!("{}", res);
             Ok(())
         },
         Err(e) => {
