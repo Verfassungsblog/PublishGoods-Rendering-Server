@@ -124,7 +124,6 @@ pub async fn process_connection(mut tls_stream: TlsStream<TcpStream>, storage: A
                 RenderingStatus::Failed(RenderingError::Other("Not Found".to_string()))
             }
         };
-        println!("Debug: Status {:?}", status);
         match status{
             // break if finished or failed
             RenderingStatus::Finished(_) => {
