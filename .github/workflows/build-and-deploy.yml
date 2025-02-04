@@ -71,7 +71,7 @@ jobs:
         run: | 
           ssh -i ~/.ssh/staging_ssh_key -t verfassungsbooks@editor-staging-rendering1.verfassungsblog.de "sudo systemctl stop rendering-server.service"
       - name: Upload artifact to staging server
-        run: scp dest/verfassungsbooks-rendering-server-bundled.tar.gz verfassungsbooks@editor-staging-rendering1.verfassungsblog.de:/home/verfassungsbooks/verfassungsbooks-rendering-server-bundled.tar.gz
+        run: scp -i ~/.ssh/staging_ssh_key dest/verfassungsbooks-rendering-server-bundled.tar.gz verfassungsbooks@editor-staging-rendering1.verfassungsblog.de:/home/verfassungsbooks/verfassungsbooks-rendering-server-bundled.tar.gz
       - name: Start update and start staging server
         run: |
           ssh -i ~/.ssh/staging_ssh_key -t verfassungsbooks@editor-staging-rendering1.verfassungsblog.de "cd /home/verfassungsbooks && ./update.sh verfassungsbooks-rendering-server-bundled.tar.gz rendering-server"
