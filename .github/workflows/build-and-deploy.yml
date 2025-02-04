@@ -3,11 +3,12 @@ name: Build & Deploy Master
 on:
   push:
     branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
 
 env:
   CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
 
 jobs:
   build:
