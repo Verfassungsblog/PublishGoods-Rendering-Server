@@ -14,7 +14,7 @@ rustls-pemfile = "2.1.2"
 vb-exchange = {git = "https://github.com/Verfassungsblog/Verfassungsbooks-Exchange-Lib", branch="master"}
 uuid = { version = "1.10.0", features = ["v4"] }
 async-recursion = "1.1.1"
-handlebars = { version = "6.0.0", features = ["dir_source"] }
+handlebars = { version = "6.3.0", features = ["dir_source"] }
 qrcode = "0.14"
 image = "0.25.2"
 base64 = "0.22.0"
