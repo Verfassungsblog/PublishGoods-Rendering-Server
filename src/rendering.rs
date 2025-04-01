@@ -21,7 +21,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
     let subthreads_num = Arc::new(AtomicU64::new(0));
 
     loop{
-        if subthreads_num.load(Ordering::Relaxed) >= settings.max_rendering_threads {
+        if subthreads_num.load(Ordering::SeqCst) >= settings.max_rendering_threads {
             println!("Too many running subthreads, waiting for one to end.");
             continue;
         }
@@ -35,7 +35,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
             let subthreads_num_cpy = Arc::clone(&subthreads_num);
 
             tokio::spawn(async move{
-                subthreads_num_cpy.fetch_add(1, Ordering::Relaxed);
+                subthreads_num_cpy.fetch_add(1, Ordering::SeqCst);
 
                 // Get export formats to render
                 let mut export_formats_queue = render_request.export_formats.clone();
@@ -121,7 +121,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
                     *status = RenderingStatus::Finished(RenderingResult{files: res_files})
                 }
 
-                subthreads_num_cpy.fetch_sub(1, Ordering::Relaxed);
+                subthreads_num_cpy.fetch_sub(1, Ordering::SeqCst);
             });
 
         }else{
