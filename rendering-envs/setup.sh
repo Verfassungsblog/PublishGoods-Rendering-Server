@@ -39,6 +39,27 @@ rm -r pandoc/bin pandoc/share
 
 echo "Finished preparing pandoc env."
 
+# Weasyprint
+# Step 1: Check if the weasyprint directory exists and rename it if necessary
+if [ -d "weasyprint" ]; then
+  count=1
+  while [ -d "weasyprint-old-$count" ]; do
+    count=$((count + 1))
+  done
+  mv vivliostyle "weasyprint-old-$count"
+fi
+
+# Step 2: Create a new weasyprint directory
+mkdir -p weasyprint/build
+cd weasyprint/build || exit 1
+
+python3 -m venv venv
+venv/bin/pip install weasyprint nuitka
+venv/bin/nuitka --clang --standalone --onefile --static-libpython=yes --output-dir=../ --remove-output venv/bin/weasyprint
+cd ../
+rm -rf build
+cd ../
+
 # Vivliostyle
 
 # Step 1: Check if the vivliostyle directory exists and rename it if necessary

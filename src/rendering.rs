@@ -12,7 +12,7 @@ use image::Luma;
 use qrcode::QrCode;
 use tokio::task::JoinSet;
 use vb_exchange::{FilesOnMemoryOrHarddrive, NamedFile, RenderingError, RenderingRequest, RenderingResult, RenderingStatus};
-use vb_exchange::export_formats::{ExportStepData, PandocExportStep, RawExportStep, VivliostyleExportStep};
+use vb_exchange::export_formats::{ExportStepData, PandocExportStep, RawExportStep, VivliostyleExportStep, WeasyprintExportStep, WeasyprintPDFVariant};
 use vb_exchange::projects::PreparedProject;
 use crate::settings::Settings;
 use crate::storage::Storage;
@@ -197,7 +197,8 @@ pub fn render_export_format(slug: String, storage: Arc<Storage>, request: Arc<Re
         let res = match export_step.data{
             ExportStepData::Raw(raw) => render_raw_export_step(raw, &temp_directory, &request.prepared_project, &mut rendering_log),
             ExportStepData::Vivliostyle(vivlio) => render_vivliostyle_export_step(vivlio, &temp_directory, &mut rendering_log),
-            ExportStepData::Pandoc(pan) => render_pandoc_export_step(pan, &temp_directory, &mut rendering_log)
+            ExportStepData::Pandoc(pan) => render_pandoc_export_step(pan, &temp_directory, &mut rendering_log),
+            ExportStepData::Weasyprint(wes) => render_weasyprint_export_step(wes, &temp_directory, &mut rendering_log),
         };
 
         if let Err(e) = res{
@@ -335,6 +336,81 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
 
     out.write(&format!("<img class=\"qrcode\" src=\"data:image/jpeg;base64,{}\" alt=\"QR Code\" />", encoded_image))?;
     Ok(())
+}
+
+/// Calls weasyprint via bubblewrap (for isolation) and renders the html to pdf
+pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &PathBuf, rendering_log: &mut String) -> Result<(), RenderingError>{
+    // Start bubblewrap
+    let mut command = Command::new("bwrap");
+
+    // Bubblewrap options
+    command.arg("--unshare-all").arg("--bind").arg(temp_dir).arg("/data").arg("--ro-bind").arg("rendering-envs/weasyprint").arg("/env");
+
+    if Path::new("/usr/share/fonts").exists(){
+        command.arg("--ro-bind").arg("/usr/share/fonts").arg("/usr/share/fonts");
+    }else {
+        if Path::new("/usr/local/share/fonts").exists() {
+            command.arg("--ro-bind").arg("/usr/local/share/fonts").arg("/usr/share/fonts/");
+        }
+    }
+
+    // Call weasyprint bin
+    command.arg("/env/weasyprint.bin");
+
+    // Add weasyprint options
+    if let Some(variant) = step.pdf_variant{
+        let variant_str = match variant{
+            WeasyprintPDFVariant::PDF => {
+                "pdf"
+            }
+            WeasyprintPDFVariant::PDFA1B => {
+                "pdf/a-1b"
+            }
+            WeasyprintPDFVariant::PDFA2B => {
+                "pdf/a-2b"
+            }
+            WeasyprintPDFVariant::PDFA3B => {
+                "pdf/a-3b"
+            }
+            WeasyprintPDFVariant::PDFA4B => {
+                "pdf/a-4b"
+            }
+            WeasyprintPDFVariant::PDFA2U => {
+                "pdf/a-2u"
+            }
+            WeasyprintPDFVariant::PDFA3U => {
+                "pdf/a-3u"
+            }
+            WeasyprintPDFVariant::PDFA4U => {
+                "pdf/a-4u"
+            }
+            WeasyprintPDFVariant::PDFUA1 => {
+                "pdf/ua-1"
+            }
+            WeasyprintPDFVariant::DEBUG => {
+                "debug"
+            }
+        };
+
+        command.arg("--pdf-variant").arg(variant_str);
+    }
+
+    // Add weasyprint input/output files
+    command.arg(format!("/data/{}", step.input_file)).arg(format!("/data/{}", step.output_file));
+
+    match command.output() {
+        Ok(res1) => {
+            let stdout = String::from_utf8(res1.stdout).unwrap_or("".to_string());
+            let stderr = String::from_utf8(res1.stderr).unwrap_or("".to_string());
+            let res = format!("Weasyprint ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
+            rendering_log.push_str(&res);
+            Ok(())
+        },
+        Err(e) => {
+            rendering_log.push_str(&format!("Couldn't render with weasyprint: {}", e));
+            Err(RenderingError::WeasyprintRenderingFailed(rendering_log.clone()))
+        }
+    }
 }
 
 pub fn render_vivliostyle_export_step(step: VivliostyleExportStep, temp_dir: &PathBuf, rendering_log: &mut String) -> Result<(), RenderingError>{
