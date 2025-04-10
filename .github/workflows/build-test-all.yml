@@ -31,7 +31,7 @@ jobs:
     - name: Package artifact
       run: |
         mkdir packaged
-        cp target/release/Verfassungsbooks packaged/ 
+        cp target/release/Verfassungsbooks-Rendering-Server packaged/ 
         mkdir packaged/config && mkdir packaged/data 
         cp -R data/csl_locales packaged/data/ 
         cp -R data/csl_styles packaged/data/ 
