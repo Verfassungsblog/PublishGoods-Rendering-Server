@@ -344,7 +344,16 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
     let mut command = Command::new("bwrap");
 
     // Bubblewrap options
-    command.arg("--unshare-all").arg("--bind").arg(temp_dir).arg("/data").arg("--ro-bind").arg("rendering-envs/weasyprint").arg("/env");
+    command.arg("--unshare-all")
+        .arg("--ro-bind").arg("/lib").arg("/lib")
+        .arg("--ro-bind").arg("/lib64").arg("/lib64")
+        .arg("--ro-bind").arg("/usr/lib").arg("/usr/lib")
+        .arg("--ro-bind").arg("/usr/lib64").arg("/usr/lib64")
+        .arg("--tmpfs").arg("/tmp")
+        .arg("--proc").arg("/proc")
+        .arg("--dev").arg("/dev")
+        .arg("--bind").arg(temp_dir).arg("/data")
+        .arg("--ro-bind").arg("rendering-envs/weasyprint").arg("/env");
 
     if Path::new("/usr/share/fonts").exists(){
         command.arg("--ro-bind").arg("/usr/share/fonts").arg("/usr/share/fonts");
