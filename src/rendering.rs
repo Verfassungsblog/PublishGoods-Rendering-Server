@@ -363,6 +363,10 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
         }
     }
 
+    if Path::new("/usr/share/color").exists(){
+        command.arg("--ro-bind").arg("/usr/share/color").arg("/usr/share/color");
+    }
+
     // Call weasyprint bin
     command.arg("/env/weasyprint.bin");
 
@@ -370,38 +374,40 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
     if let Some(variant) = step.pdf_variant{
         let variant_str = match variant{
             WeasyprintPDFVariant::PDF => {
-                "pdf"
+                None
             }
             WeasyprintPDFVariant::PDFA1B => {
-                "pdf/a-1b"
+                Some("pdf/a-1b")
             }
             WeasyprintPDFVariant::PDFA2B => {
-                "pdf/a-2b"
+                Some("pdf/a-2b")
             }
             WeasyprintPDFVariant::PDFA3B => {
-                "pdf/a-3b"
+                Some("pdf/a-3b")
             }
             WeasyprintPDFVariant::PDFA4B => {
-                "pdf/a-4b"
+                Some("pdf/a-4b")
             }
             WeasyprintPDFVariant::PDFA2U => {
-                "pdf/a-2u"
+                Some("pdf/a-2u")
             }
             WeasyprintPDFVariant::PDFA3U => {
-                "pdf/a-3u"
+                Some("pdf/a-3u")
             }
             WeasyprintPDFVariant::PDFA4U => {
-                "pdf/a-4u"
+                Some("pdf/a-4u")
             }
             WeasyprintPDFVariant::PDFUA1 => {
-                "pdf/ua-1"
+                Some("pdf/ua-1")
             }
             WeasyprintPDFVariant::DEBUG => {
-                "debug"
+                Some("debug")
             }
         };
 
-        command.arg("--pdf-variant").arg(variant_str);
+        if let Some(variant) = variant_str{
+            command.arg("--pdf-variant").arg(variant);
+        }
     }
 
     // Add weasyprint input/output files
