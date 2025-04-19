@@ -367,8 +367,8 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
         command.arg("--ro-bind").arg("/usr/share/color").arg("/usr/share/color");
     }
 
-    // Call weasyprint bin
-    command.arg("/env/weasyprint.dist/weasyprint.bin");
+    // Call weasyprint
+    command.arg("/env/weasyprint/venv/bin/python /env/weasyprint/venv/bin/weasyprint");
 
     // Add weasyprint options
     if let Some(variant) = step.pdf_variant{

@@ -50,14 +50,14 @@ if [ -d "weasyprint" ]; then
 fi
 
 # Step 2: Create a new weasyprint directory
-mkdir -p weasyprint/build
-cd weasyprint/build || exit 1
+mkdir -p weasyprint
+cd weasyprint || exit 1
 
 python3 -m venv venv
-venv/bin/pip install weasyprint nuitka
-venv/bin/nuitka --clang --standalone --static-libpython=yes --output-dir=../ --remove-output venv/bin/weasyprint
-cd ../
-rm -rf build
+venv/bin/pip install weasyprint #nuitka
+#venv/bin/nuitka --clang --standalone --static-libpython=yes --output-dir=../ --remove-output venv/bin/weasyprint
+#cd ../
+#rm -rf build
 cd ../
 
 # Vivliostyle
