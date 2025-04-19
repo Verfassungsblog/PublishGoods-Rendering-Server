@@ -368,7 +368,7 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
     }
 
     // Call weasyprint
-    command.arg("/env/weasyprint/venv/bin/python /env/weasyprint/venv/bin/weasyprint");
+    command.arg("/env/venv/bin/python /env/venv/bin/weasyprint");
 
     // Add weasyprint options
     if let Some(variant) = step.pdf_variant{
