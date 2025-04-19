@@ -46,7 +46,7 @@ if [ -d "weasyprint" ]; then
   while [ -d "weasyprint-old-$count" ]; do
     count=$((count + 1))
   done
-  mv vivliostyle "weasyprint-old-$count"
+  mv weasyprint "weasyprint-old-$count"
 fi
 
 # Step 2: Create a new weasyprint directory
@@ -55,7 +55,7 @@ cd weasyprint/build || exit 1
 
 python3 -m venv venv
 venv/bin/pip install weasyprint nuitka
-venv/bin/nuitka --clang --standalone --onefile --static-libpython=yes --output-dir=../ --remove-output venv/bin/weasyprint
+venv/bin/nuitka --clang --standalone --static-libpython=yes --output-dir=../ --remove-output venv/bin/weasyprint
 cd ../
 rm -rf build
 cd ../

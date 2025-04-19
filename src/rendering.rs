@@ -368,7 +368,7 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
     }
 
     // Call weasyprint bin
-    command.arg("/env/weasyprint.bin");
+    command.arg("/env/weasyprint.dist/weasyprint.bin");
 
     // Add weasyprint options
     if let Some(variant) = step.pdf_variant{
