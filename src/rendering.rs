@@ -368,7 +368,7 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
     }
 
     // Call weasyprint
-    command.arg("/env/venv/bin/python /env/venv/bin/weasyprint");
+    command.arg("/env/venv/bin/python").arg("/env/venv/bin/weasyprint");
 
     // Add weasyprint options
     if let Some(variant) = step.pdf_variant{
@@ -419,6 +419,7 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
             let stderr = String::from_utf8(res1.stderr).unwrap_or("".to_string());
             let res = format!("Weasyprint ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
             rendering_log.push_str(&res);
+            println!("Weasyprint ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
             Ok(())
         },
         Err(e) => {

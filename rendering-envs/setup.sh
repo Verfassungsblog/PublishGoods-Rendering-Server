@@ -53,7 +53,7 @@ fi
 mkdir -p weasyprint
 cd weasyprint || exit 1
 
-python3 -m venv venv
+python3 -m venv --copies venv
 venv/bin/pip install weasyprint #nuitka
 #venv/bin/nuitka --clang --standalone --static-libpython=yes --output-dir=../ --remove-output venv/bin/weasyprint
 #cd ../
