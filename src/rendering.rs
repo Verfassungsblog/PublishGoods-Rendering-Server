@@ -349,6 +349,7 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
         .arg("--ro-bind").arg("/lib64").arg("/lib64")
         .arg("--ro-bind").arg("/usr/lib").arg("/usr/lib")
         .arg("--ro-bind").arg("/usr/lib64").arg("/usr/lib64")
+        .arg("--ro-bind").arg("/usr/bin/python3").arg("/usr/bin/python3")
         .arg("--tmpfs").arg("/tmp")
         .arg("--proc").arg("/proc")
         .arg("--dev").arg("/dev")
@@ -368,7 +369,7 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
     }
 
     // Call weasyprint
-    command.arg("/env/venv/bin/python").arg("/env/venv/bin/weasyprint");
+    command.arg("/env/venv/bin/python3").arg("/env/venv/bin/weasyprint");
 
     // Add weasyprint options
     if let Some(variant) = step.pdf_variant{
