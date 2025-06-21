@@ -11,7 +11,7 @@ config = "0"
 serde = { version = "1.0.204", features = ["derive"] }
 rustls-pemfile = "2.1.2"
 #vb-exchange = {path = "../Verfassungsbooks-Exchange-Lib"}
-vb-exchange = {git = "https://github.com/Verfassungsblog/Verfassungsbooks-Exchange-Lib", branch="master"}
+vb-exchange = {git = "https://github.com/Verfassungsblog/Verfassungsbooks-Exchange-Lib", tag="2025.6.3"}
 uuid = { version = "1.12.1", features = ["v4"] }
 async-recursion = "1.1.1"
 handlebars = { version = "6.3.0", features = ["dir_source"] }
