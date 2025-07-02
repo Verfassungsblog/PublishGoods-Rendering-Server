@@ -10,6 +10,7 @@ use base64::prelude::BASE64_STANDARD;
 use handlebars::{Context, DirectorySourceOptions, Handlebars, Helper, HelperResult, JsonRender, Output, RenderContext, RenderError, RenderErrorReason};
 use image::Luma;
 use qrcode::QrCode;
+use qrcode::render::svg;
 use tokio::task::JoinSet;
 use vb_exchange::{FilesOnMemoryOrHarddrive, NamedFile, RenderingError, RenderingRequest, RenderingResult, RenderingStatus};
 use vb_exchange::export_formats::{ExportStepData, PandocExportStep, RawExportStep, VivliostyleExportStep, WeasyprintExportStep, WeasyprintPDFVariant};
@@ -322,19 +323,9 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
         }
     };
 
-    let image = qr_code.render::<Luma<u8>>().build();
-    let image = image::DynamicImage::from(image);
-    let mut buf = Cursor::new(Vec::new());
-    match image.write_to(&mut buf, image::ImageFormat::Png){
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("Couldn't write qr code to buffer: {}", e);
-            return Err(RenderError::from(RenderErrorReason::Other(format!("Couldn't write qr code to buffer: {}", e))));
-        }
-    }
-    let encoded_image = BASE64_STANDARD.encode(buf.get_ref());
-
-    out.write(&format!("<img class=\"qrcode\" src=\"data:image/png;base64,{}\" alt=\"QR Code\" />", encoded_image))?;
+    let image = qr_code.render::<svg::Color>().build();
+    
+    out.write(&format!("<svg class=\"qrcode\" alt=\"QR Code\" />{}</svg>", image))?;
     Ok(())
 }
 
