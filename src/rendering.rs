@@ -312,7 +312,16 @@ pub fn render_raw_export_step(step: RawExportStep, temp_dir: &PathBuf, prepared_
 
 fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut RenderContext, out: &mut dyn Output) -> HelperResult{
     let param = h.param(0).ok_or(RenderErrorReason::ParamNotFoundForIndex("qrcode", 0))?;
-
+    let qrcode_color_dark = if let Some(param) = h.param(1){
+        param.value().render().to_string()
+    }else{
+        "#000000".to_string()
+    };
+    let qrcode_color_light = if let Some(param) = h.param(2){
+        param.value().render().to_string()
+    }else{
+        "#ffffff".to_string()
+    };
     let val : String = param.value().render();
 
     let qr_code = match QrCode::new(val.to_string()){
@@ -323,7 +332,10 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
         }
     };
 
-    let mut image = qr_code.render::<svg::Color>().build();
+    let mut image = qr_code.render::<svg::Color>()
+        .dark_color(svg::Color(&qrcode_color_dark))
+        .light_color(svg::Color(&qrcode_color_light))
+        .build();
     image = image.replace("<?xml version=\"1.0\" standalone=\"yes\"?>", "");
 
     out.write(&format!("<div class=\"qrcode\" alt=\"QR Code\" />{}</div>", image))?;
