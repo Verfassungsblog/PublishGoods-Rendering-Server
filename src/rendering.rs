@@ -325,7 +325,7 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
     let image = qr_code.render::<Luma<u8>>().build();
     let image = image::DynamicImage::from(image);
     let mut buf = Cursor::new(Vec::new());
-    match image.write_to(&mut buf, image::ImageFormat::Jpeg){
+    match image.write_to(&mut buf, image::ImageFormat::Png){
         Ok(_) => {}
         Err(e) => {
             eprintln!("Couldn't write qr code to buffer: {}", e);
@@ -334,7 +334,7 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
     }
     let encoded_image = BASE64_STANDARD.encode(buf.get_ref());
 
-    out.write(&format!("<img class=\"qrcode\" src=\"data:image/jpeg;base64,{}\" alt=\"QR Code\" />", encoded_image))?;
+    out.write(&format!("<img class=\"qrcode\" src=\"data:image/png;base64,{}\" alt=\"QR Code\" />", encoded_image))?;
     Ok(())
 }
 
