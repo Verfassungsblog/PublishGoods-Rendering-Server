@@ -323,9 +323,10 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
         }
     };
 
-    let image = qr_code.render::<svg::Color>().build();
-    
-    out.write(&format!("<svg class=\"qrcode\" alt=\"QR Code\" />{}</svg>", image))?;
+    let mut image = qr_code.render::<svg::Color>().build();
+    image = image.replace("<?xml version=\"1.0\" standalone=\"yes\"?>", "");
+
+    out.write(&format!("<div class=\"qrcode\" alt=\"QR Code\" />{}</div>", image))?;
     Ok(())
 }
 
