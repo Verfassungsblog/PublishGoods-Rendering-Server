@@ -456,6 +456,7 @@ pub fn render_vivliostyle_export_step(step: VivliostyleExportStep, temp_dir: &Pa
 
     command.arg("-o").arg(format!("/data/{}", step.output_file));
     command.arg("--executable-browser").arg("/env/chromium/chrome");
+    command.arg("--host").arg("127.0.0.1");
 
     match command.output() {
         Ok(res) => {
