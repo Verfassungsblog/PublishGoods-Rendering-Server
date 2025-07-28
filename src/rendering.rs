@@ -290,6 +290,7 @@ pub fn render_raw_export_step(step: RawExportStep, temp_dir: &PathBuf, prepared_
 
     // Add custom handler for qr codes
     handlebars.register_helper("qrcode", Box::new(handlebars_qrcode_helper));
+    handlebars.register_helper("initial_letter", Box::new(handlebars_initial_letter_helper));
 
     rendering_log.push_str("Starting handlebars rendering.");
     match handlebars.render(&step.entry_point.replace(".hbs.html", ""), prepared_project){
@@ -339,6 +340,32 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
     image = image.replace("<?xml version=\"1.0\" standalone=\"yes\"?>", "");
 
     out.write(&format!("<div class=\"qrcode\" alt=\"QR Code\" />{}</div>", image))?;
+    Ok(())
+}
+
+fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut RenderContext, out: &mut dyn Output) -> HelperResult{
+    let param = h.param(0).ok_or(RenderErrorReason::ParamNotFoundForIndex("initial_letter", 0))?;
+    let param_str = param.value().render();
+
+    let initial_letter_index = match param_str.find(">") { 
+        Some(index) => index + 1,
+        None => {
+            eprintln!("No \">\" in initial_letter parameter");
+            return Err(RenderError::from(RenderErrorReason::Other(String::from("No \">\" in initial_letter parameter"))));
+        }
+    };
+    
+    let initial_letter = match param_str.chars().nth(initial_letter_index) {
+        Some(letter) => letter,
+        None => {
+            eprintln!("No initial letter found");
+            return Err(RenderError::from(RenderErrorReason::Other(String::from("No initial letter found"))));
+        }
+    };
+    
+    let html: String = param_str.chars().enumerate().map(|(index, letter)| {if index == initial_letter_index {'\0'} else {letter}}).collect();
+
+    out.write(&format!("{}", html))?;
     Ok(())
 }
 
