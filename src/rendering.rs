@@ -17,6 +17,7 @@ use vb_exchange::export_formats::{ExportStepData, PandocExportStep, RawExportSte
 use vb_exchange::projects::PreparedProject;
 use crate::settings::Settings;
 use crate::storage::Storage;
+use html_escape::encode_text;
 
 pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
     let subthreads_num = Arc::new(AtomicU64::new(0));
@@ -346,9 +347,15 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
 fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut RenderContext, out: &mut dyn Output) -> HelperResult{
     let param = h.param(0).ok_or(RenderErrorReason::ParamNotFoundForIndex("initial_letter", 0))?;
     let param_str = param.value().render();
-
-    let initial_letter_index = match param_str.find(">") { 
-        Some(index) => index + 1,
+    println!("{}", param_str);
+    
+    let pointy_bracket_list: Vec<_> = param_str.match_indices(">").collect();
+    if pointy_bracket_list.is_empty(){
+        return Err(RenderError::from(RenderErrorReason::Other(String::from("No \">\" in initial_letter parameter"))));
+    }
+    let last_pointy_bracket_of_tag = pointy_bracket_list.len() / 2 - 1;
+    let initial_letter_index = match pointy_bracket_list.into_iter().nth(last_pointy_bracket_of_tag) { 
+        Some(tuple) => tuple.0 + 1,
         None => {
             eprintln!("No \">\" in initial_letter parameter");
             return Err(RenderError::from(RenderErrorReason::Other(String::from("No \">\" in initial_letter parameter"))));
