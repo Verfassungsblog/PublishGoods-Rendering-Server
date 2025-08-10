@@ -361,7 +361,7 @@ fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc
     serialize(& mut buffer, &document, Default::default()).expect("serialization failed");
     let serialized_html = String::from_utf8(buffer)?.replace("<html><head></head><body>", "").replace("</body></html>", "");
     
-    out.write(&format!("{} <p/>First Letter: {}</p>", serialized_html, first_letter))?;
+    out.write(&format!("{}", serialized_html))?;
     Ok(())
 }
 
