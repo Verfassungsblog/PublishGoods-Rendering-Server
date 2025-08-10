@@ -18,11 +18,9 @@ use vb_exchange::export_formats::{ExportStepData, PandocExportStep, RawExportSte
 use vb_exchange::projects::PreparedProject;
 use crate::settings::Settings;
 use crate::storage::Storage;
-use html_escape::encode_text;
 use html5ever::{parse_document, serialize};
 use html5ever::tendril::{StrTendril, TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom, SerializableHandle};
-use std::rc::Rc;
 
 pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
     let subthreads_num = Arc::new(AtomicU64::new(0));
@@ -363,7 +361,7 @@ fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc
     serialize(& mut buffer, &document, Default::default()).expect("serialization failed");
     let serialized_html = String::from_utf8(buffer)?.replace("<html><head></head><body>", "").replace("</body></html>", "");
     
-    out.write(&format!("{}", serialized_html))?;
+    out.write(&format!("{} <p/>First Letter: {}</p>", serialized_html, first_letter))?;
     Ok(())
 }
 
@@ -376,8 +374,10 @@ fn initial_letter_find_first_text(handle: &Handle, first_letter_str: & mut Strin
             let tendril_string = text_ref.deref_mut();
             let mut text = tendril_string.to_string();
             if !text.is_empty() {
-                first_letter_str.push_str(&text[..1]);
-                text.replace_range(0..1, "");
+                let mut  text_iter = text.chars().into_iter();
+                let first_letter = text_iter.next()?.to_string();
+                text = text_iter.collect::<String>();
+                first_letter_str.push_str(&first_letter);
             }
             *tendril_string = StrTendril::from(text);
             return Some(node.clone());
