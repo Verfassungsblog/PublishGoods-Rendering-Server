@@ -1,5 +1,6 @@
 use std::{fs, io};
 use std::io::Cursor;
+use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -18,6 +19,10 @@ use vb_exchange::projects::PreparedProject;
 use crate::settings::Settings;
 use crate::storage::Storage;
 use html_escape::encode_text;
+use html5ever::{parse_document, serialize};
+use html5ever::tendril::{StrTendril, TendrilSink};
+use markup5ever_rcdom::{Handle, NodeData, RcDom, SerializableHandle};
+use std::rc::Rc;
 
 pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
     let subthreads_num = Arc::new(AtomicU64::new(0));
@@ -347,33 +352,45 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
 fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut RenderContext, out: &mut dyn Output) -> HelperResult{
     let param = h.param(0).ok_or(RenderErrorReason::ParamNotFoundForIndex("initial_letter", 0))?;
     let param_str = param.value().render();
-    println!("{}", param_str);
-    
-    let pointy_bracket_list: Vec<_> = param_str.match_indices(">").collect();
-    if pointy_bracket_list.is_empty(){
-        return Err(RenderError::from(RenderErrorReason::Other(String::from("No \">\" in initial_letter parameter"))));
-    }
-    let last_pointy_bracket_of_tag = pointy_bracket_list.len() / 2 - 1;
-    let initial_letter_index = match pointy_bracket_list.into_iter().nth(last_pointy_bracket_of_tag) { 
-        Some(tuple) => tuple.0 + 1,
-        None => {
-            eprintln!("No \">\" in initial_letter parameter");
-            return Err(RenderError::from(RenderErrorReason::Other(String::from("No \">\" in initial_letter parameter"))));
-        }
-    };
-    
-    let initial_letter = match param_str.chars().nth(initial_letter_index) {
-        Some(letter) => letter,
-        None => {
-            eprintln!("No initial letter found");
-            return Err(RenderError::from(RenderErrorReason::Other(String::from("No initial letter found"))));
-        }
-    };
-    
-    let html: String = param_str.chars().enumerate().map(|(index, letter)| {if index == initial_letter_index {'\0'} else {letter}}).collect();
+    let dom = parse_document(RcDom::default(), Default::default()).from_utf8().read_from(&mut param_str.as_bytes())?;
 
-    out.write(&format!("{}", html))?;
+    let mut first_letter = String::new();
+
+    initial_letter_find_first_text(&dom.document, & mut first_letter);
+
+    let document: SerializableHandle = dom.document.clone().into();
+    let mut buffer = Vec::new();
+    serialize(& mut buffer, &document, Default::default()).expect("serialization failed");
+    let serialized_html = String::from_utf8(buffer)?.replace("<html><head></head><body>", "").replace("</body></html>", "");
+    
+    out.write(&format!("{}", serialized_html))?;
     Ok(())
+}
+
+fn initial_letter_find_first_text(handle: &Handle, first_letter_str: & mut String) -> Option<Handle>{
+    let node = handle;
+
+    match node.data{
+        NodeData::Text { ref contents } => {
+            let mut text_ref = contents.borrow_mut();
+            let tendril_string = text_ref.deref_mut();
+            let mut text = tendril_string.to_string();
+            if !text.is_empty() {
+                first_letter_str.push_str(&text[..1]);
+                text.replace_range(0..1, "");
+            }
+            *tendril_string = StrTendril::from(text);
+            return Some(node.clone());
+        },
+        _ => {
+            for child in node.children.borrow().iter(){
+                if let Some(found) = initial_letter_find_first_text(child, first_letter_str) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Calls weasyprint via bubblewrap (for isolation) and renders the html to pdf
