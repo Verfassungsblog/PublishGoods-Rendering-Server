@@ -353,7 +353,6 @@ fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc
     let dom = parse_document(RcDom::default(), Default::default()).from_utf8().read_from(&mut param_str.as_bytes())?;
 
     let mut first_letter = String::new();
-
     initial_letter_find_first_text(&dom.document, & mut first_letter);
 
     let document: SerializableHandle = dom.document.clone().into();
@@ -365,9 +364,7 @@ fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc
     Ok(())
 }
 
-fn initial_letter_find_first_text(handle: &Handle, first_letter_str: & mut String) -> Option<Handle>{
-    let node = handle;
-
+fn initial_letter_find_first_text(node: &Handle, first_letter_str: & mut String) -> Option<Handle>{
     match node.data{
         NodeData::Text { ref contents } => {
             let mut text_ref = contents.borrow_mut();
