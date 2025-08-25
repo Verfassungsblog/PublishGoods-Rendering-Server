@@ -11,7 +11,7 @@ use base64::prelude::BASE64_STANDARD;
 use handlebars::{Context, DirectorySourceOptions, Handlebars, Helper, HelperResult, JsonRender, Output, RenderContext, RenderError, RenderErrorReason};
 use image::Luma;
 use qrcode::QrCode;
-use qrcode::render::svg;
+use qrcode::render;
 use tokio::task::JoinSet;
 use vb_exchange::{FilesOnMemoryOrHarddrive, NamedFile, RenderingError, RenderingRequest, RenderingResult, RenderingStatus};
 use vb_exchange::export_formats::{ExportStepData, PandocExportStep, RawExportStep, VivliostyleExportStep, WeasyprintExportStep, WeasyprintPDFVariant};
@@ -21,6 +21,8 @@ use crate::storage::Storage;
 use html5ever::{parse_document, serialize};
 use html5ever::tendril::{StrTendril, TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom, SerializableHandle};
+use svg::Document;
+use svg::node::element::{Text, Rectangle};
 
 pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
     let subthreads_num = Arc::new(AtomicU64::new(0));
@@ -337,9 +339,9 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
         }
     };
 
-    let mut image = qr_code.render::<svg::Color>()
-        .dark_color(svg::Color(&qrcode_color_dark))
-        .light_color(svg::Color(&qrcode_color_light))
+    let mut image = qr_code.render::<render::svg::Color>()
+        .dark_color(render::svg::Color(&qrcode_color_dark))
+        .light_color(render::svg::Color(&qrcode_color_light))
         .build();
     image = image.replace("<?xml version=\"1.0\" standalone=\"yes\"?>", "");
 
@@ -359,8 +361,24 @@ fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc
     let mut buffer = Vec::new();
     serialize(& mut buffer, &document, Default::default()).expect("serialization failed");
     let serialized_html = String::from_utf8(buffer)?.replace("<html><head></head><body>", "").replace("</body></html>", "");
+
+    let first_letter_svg_node = Text::new(first_letter)
+        .set("text-anchor", "middle")
+        .set("dominant-baseline", "middle")
+        .set("font-size", "100")
+        .set("x", 55)
+        .set("y", 55)
+        .set("fill", "#000000");
+
+    let document = Document::new()
+        .set("viewBox", (0, 0, 100, 100))
+        .set("width", "1.1em")
+        .set("height", "1.1em")
+        .add(first_letter_svg_node);
+
+    let svg_string = document.to_string();
     
-    out.write(&format!("{}", serialized_html))?;
+    out.write(&format!("<div class=\"initial-letter\" style=\"float: left;\">{}</div>{}", svg_string, serialized_html))?;
     Ok(())
 }
 
