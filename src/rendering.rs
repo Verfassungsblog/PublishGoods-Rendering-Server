@@ -1,6 +1,8 @@
 use std::{fs, io};
+use std::fmt::format;
 use std::io::Cursor;
 use std::ops::DerefMut;
+use std::panic::set_hook;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -352,6 +354,9 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
 fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut RenderContext, out: &mut dyn Output) -> HelperResult{
     let param = h.param(0).ok_or(RenderErrorReason::ParamNotFoundForIndex("initial_letter", 0))?;
     let param_str = param.value().render();
+    let font_family_param = h.param(1).ok_or(RenderErrorReason::ParamNotFoundForIndex("initial_letter", 1))?;
+    let font_family = font_family_param.value().render();
+    
     let dom = parse_document(RcDom::default(), Default::default()).from_utf8().read_from(&mut param_str.as_bytes())?;
 
     let mut first_letter = String::new();
@@ -368,7 +373,8 @@ fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc
         .set("font-size", "100")
         .set("x", 55)
         .set("y", 55)
-        .set("fill", "#000000");
+        .set("fill", "#000000")
+        .set("font-family", format!("\"{}\"", font_family));
 
     let document = Document::new()
         .set("viewBox", (0, 0, 100, 100))
