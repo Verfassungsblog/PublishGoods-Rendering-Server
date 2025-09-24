@@ -383,6 +383,7 @@ fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc
 }
 
 fn initial_letter_find_first_text(node: &Handle, first_letter_str: & mut String) -> Option<Handle>{
+    //if is_parent_p_tag(node.parent.upgrade()){}
     match node.data{
         NodeData::Text { ref contents } => {
             let mut text_ref = contents.borrow_mut();
@@ -406,6 +407,19 @@ fn initial_letter_find_first_text(node: &Handle, first_letter_str: & mut String)
         }
     }
     None
+}
+
+fn is_parent_p_tag(parent: &Handle) -> bool{
+    let mut boolean: bool = false; 
+    match parent.data { 
+        NodeData::Element{ref name, ..} => {
+            if name.local.eq_str_ignore_ascii_case("p"){
+                boolean = true;
+            }
+        },
+        _ => boolean = false,
+    }
+    boolean
 }
 
 /// Calls weasyprint via bubblewrap (for isolation) and renders the html to pdf
