@@ -366,42 +366,51 @@ fn handlebars_initial_letter_helper(h: &Helper, _: &Handlebars, _: &Context, _rc
     let mut buffer = Vec::new();
     serialize(& mut buffer, &document, Default::default()).expect("serialization failed");
     let serialized_html = String::from_utf8(buffer)?.replace("<html><head></head><body>", "").replace("</body></html>", "");
-
-    let first_letter_svg_node = Text::new(first_letter)
-        .set("text-anchor", "middle")
-        .set("dominant-baseline", "middle")
-        .set("font-size", "100")
-        .set("x", 55)
-        .set("y", 55)
-        .set("fill", "#000000")
-        .set("font-family", format!("\"{}\"", font_family));
-
-    let document = Document::new()
-        .set("viewBox", (0, 0, 100, 100))
-        .set("width", "1.1em")
-        .set("height", "1.1em")
-        .add(first_letter_svg_node);
-
-    let svg_string = document.to_string();
+    if first_letter != "" {
+        let first_letter_svg_node = Text::new(first_letter)
+            .set("text-anchor", "middle")
+            .set("dominant-baseline", "middle")
+            .set("font-size", "100")
+            .set("x", 55)
+            .set("y", 55)
+            .set("fill", "#000000")
+            .set("font-family", format!("\"{}\"", font_family));
     
-    out.write(&format!("<div class=\"initial-letter\" style=\"float: left;\">{}</div>{}", svg_string, serialized_html))?;
+        let document = Document::new()
+            .set("viewBox", (0, 0, 100, 100))
+            .set("width", "1.1em")
+            .set("height", "1.1em")
+            .add(first_letter_svg_node);
+    
+        let svg_string = document.to_string();
+        
+        out.write(&format!("<div class=\"initial-letter\" style=\"float: left;\">{}</div>{}", svg_string, serialized_html))?;
+    }else {
+        out.write(&format!("{}", serialized_html))?;
+    };
     Ok(())
 }
 
 fn initial_letter_find_first_text(node: &Handle, first_letter_str: & mut String) -> Option<Handle>{
     match node.data{
         NodeData::Text { ref contents } => {
-            let mut text_ref = contents.borrow_mut();
-            let tendril_string = text_ref.deref_mut();
-            let mut text = tendril_string.to_string();
-            if !text.is_empty() {
-                let mut  text_iter = text.chars().into_iter();
-                let first_letter = text_iter.next()?.to_string();
-                text = text_iter.collect::<String>();
-                first_letter_str.push_str(&first_letter);
-            }
-            *tendril_string = StrTendril::from(text);
-            return Some(node.clone());
+            let parent = node.parent.take()?.upgrade()?;
+
+            if check_initial_letter_class(&parent) {
+                let mut text_ref = contents.borrow_mut();
+                let tendril_string = text_ref.deref_mut();
+                let mut text = tendril_string.to_string();
+                if !text.is_empty() {
+                    let mut text_iter = text.chars().into_iter();
+                    let first_letter = text_iter.next()?.to_string();
+                    text = text_iter.collect::<String>();
+                    first_letter_str.push_str(&first_letter);
+                }
+                *tendril_string = StrTendril::from(text);
+                return Some(node.clone());
+            }else {
+                return None;
+            };
         },
         _ => {
             for child in node.children.borrow().iter(){
@@ -412,6 +421,22 @@ fn initial_letter_find_first_text(node: &Handle, first_letter_str: & mut String)
         }
     }
     None
+}
+
+fn check_initial_letter_class(node: &Handle) -> bool{
+    let mut has_initial_letter_class = false;
+
+    println!("{:?}", node.data);
+
+    if let NodeData::Element { ref attrs, .. } = node.data{
+        let attrs = attrs.borrow();
+        for attr in attrs.iter(){
+            if attr.value.to_string().as_str() == "initial-letter-true" {
+                has_initial_letter_class = true;
+            }
+        };
+    }
+    has_initial_letter_class
 }
 
 /// Calls weasyprint via bubblewrap (for isolation) and renders the html to pdf
