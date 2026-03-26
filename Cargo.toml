@@ -1,5 +1,5 @@
 [package]
-name = "Verfassungsbooks-Rendering-Server"
+name = "PublishGoods-Rendering-Server"
 version = "0.1.0"
 edition = "2021"
 

@@ -34,20 +34,20 @@ jobs:
     - name: Package artifact
       run: |
         mkdir packaged
-        cp target/release/Verfassungsbooks-Rendering-Server packaged/ 
+        cp target/release/PublishGoods-Rendering-Server packaged/ 
         mkdir packaged/config && mkdir packaged/rendering-envs && mkdir packaged/templates 
         cp -R rendering-envs/* packaged/rendering-envs
         cp config/default.toml packaged/config/
         cp version.txt packaged/ 
         cd packaged
-        tar -vczf ../verfassungsbooks-rendering-server-bundled.tar.gz *
+        tar -vczf ../publishgoods-rendering-server-bundled.tar.gz *
     - uses: actions/upload-artifact@v4
       with:
-        name: verfassungsbooks-rendering-server
-        path: verfassungsbooks-rendering-server-bundled.tar.gz
+        name: publishgoods-rendering-server
+        path: publishgoods-rendering-server-bundled.tar.gz
     - uses: softprops/action-gh-release@v2
       with:
-        files: verfassungsbooks-rendering-server-bundled.tar.gz
+        files: publishgoods-rendering-server-bundled.tar.gz
         name: "${{ env.GIT_BRANCH }}-${{ env.GIT_HASH }}"
         tag_name: "${{ env.GIT_BRANCH }}-${{ env.GIT_HASH }}"
         draft: true
@@ -58,7 +58,7 @@ jobs:
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
-          name: verfassungsbooks-rendering-server
+          name: publishgoods-rendering-server
           path: dest
       - name: List dest
         run: ls -R dest
@@ -72,7 +72,7 @@ jobs:
         run: | 
           ssh -i ~/.ssh/staging_ssh_key -t verfassungsbooks@editor-staging-rendering1.verfassungsblog.de "sudo systemctl stop rendering-server.service"
       - name: Upload artifact to staging server
-        run: scp -i ~/.ssh/staging_ssh_key dest/verfassungsbooks-rendering-server-bundled.tar.gz verfassungsbooks@editor-staging-rendering1.verfassungsblog.de:/home/verfassungsbooks/verfassungsbooks-rendering-server-bundled.tar.gz
+        run: scp -i ~/.ssh/staging_ssh_key dest/publishgoods-rendering-server-bundled.tar.gz verfassungsbooks@editor-staging-rendering1.verfassungsblog.de:/home/verfassungsbooks/verfassungsbooks-rendering-server-bundled.tar.gz
       - name: Start update and start staging server
         run: |
           ssh -i ~/.ssh/staging_ssh_key -t verfassungsbooks@editor-staging-rendering1.verfassungsblog.de "cd /home/verfassungsbooks && ./update.sh verfassungsbooks-rendering-server-bundled.tar.gz rendering-server"
