@@ -25,6 +25,7 @@ use html5ever::tendril::{StrTendril, TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom, SerializableHandle};
 use svg::Document;
 use svg::node::element::{Text, Rectangle};
+use log::{debug, error};
 
 pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
     let subthreads_num = Arc::new(AtomicU64::new(0));
@@ -70,7 +71,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
                                 Ok(res)
                             },
                             Err(e) => {
-                                eprintln!("Couldn't render export format: {:?}", e);
+                                error!("Couldn't render export format: {:?}", e);
                                 Err(e)
                             }
                         }
@@ -85,7 +86,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
                                     results.push(res)
                                 }
                                 Err(e) => {
-                                    eprintln!("Export Format failed rendering: {:?}", e);
+                                    error!("Export Format failed rendering: {:?}", e);
                                     // Update status
                                     if let Some(status) = storage_cpy.request_status.write().unwrap().get_mut(&render_request.request_id){
                                         *status = RenderingStatus::Failed(e)
@@ -104,7 +105,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
                         let content = match tokio::fs::read(file).await {
                             Ok(data) => data,
                             Err(e) => {
-                                eprintln!("Failed to read the file: {}", e);
+                                error!("Failed to read the file: {}", e);
                                 continue;
                             }
                         };
@@ -113,7 +114,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
                     }
                     for dir in &res.temp_dirs{
                         if let Err(e) = tokio::fs::remove_dir_all(dir).await{
-                            eprintln!("Couldn't delete temp dir: {}. Keeping it for now.", e);
+                            error!("Couldn't delete temp dir: {}. Keeping it for now.", e);
                         }
                     }
                 }
@@ -121,7 +122,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
                 // Delete project uploads
                 if let FilesOnMemoryOrHarddrive::Harddrive(path) = &render_request.project_uploaded_files{
                     if let Err(e) = tokio::fs::remove_dir_all(path).await{
-                        eprintln!("Couldn't delete project uploads dir: {}.", e);
+                        error!("Couldn't delete project uploads dir: {}.", e);
                     }
                 }
 
@@ -157,13 +158,13 @@ pub fn render_export_format(slug: String, storage: Arc<Storage>, request: Arc<Re
             match template.export_formats.get(&slug){
                 Some(ef) => ef.clone(),
                 None => {
-                    eprintln!("Couldn't find export format {}.", slug);
+                    error!("Couldn't find export format {}.", slug);
                     return Err(RenderingError::TemplateNotFound)
                 }
             }
         },
         None => {
-            eprintln!("Couldn't find template {} in storage.", &request.template_id);
+            error!("Couldn't find template {} in storage.", &request.template_id);
             return Err(RenderingError::TemplateNotFound)
         }
     };
@@ -181,7 +182,7 @@ pub fn render_export_format(slug: String, storage: Arc<Storage>, request: Arc<Re
         let temp_directory = match prepare_temp_directory(request.clone(), &export_format.slug){
             Ok(temp_id) => temp_id,
             Err(e) => {
-                eprintln!("Couldn't prepare temp directory: {}", e);
+                error!("Couldn't prepare temp directory: {}", e);
                 return Err(RenderingError::Other("IO Error preparing temp directory.".to_string()));
             }
         };
@@ -292,7 +293,7 @@ pub fn render_raw_export_step(step: RawExportStep, temp_dir: &PathBuf, prepared_
     dir_options.tpl_extension = String::from(".hbs.html");
 
     if let Err(e) = handlebars.register_templates_directory(temp_dir, dir_options){
-        eprintln!("Couldn't register templates: {}", e);
+        error!("Couldn't register templates: {}", e);
         return Err(RenderingError::CouldntLoadHandlebarTemplates(e.to_string()))
     }
 
@@ -304,13 +305,13 @@ pub fn render_raw_export_step(step: RawExportStep, temp_dir: &PathBuf, prepared_
     match handlebars.render(&step.entry_point.replace(".hbs.html", ""), prepared_project){
         Ok(res) => {
             if let Err(e) = fs::write(temp_dir.join(PathBuf::from(step.output_file)), res){
-                eprintln!("Couldn't write rendered template: {}", e);
+                error!("Couldn't write rendered template: {}", e);
                 rendering_log.push_str(&format!("Couldn't write rendered template: {}", e));
                 return Err(RenderingError::HandlebarsRenderingFailed(rendering_log.clone()))
             }
         },
         Err(e) => {
-            eprintln!("Handlebars rendering failed: {}", e);
+            error!("Handlebars rendering failed: {}", e);
             rendering_log.push_str(&format!("Handlebars rendering failed: {}", e));
             return Err(RenderingError::HandlebarsRenderingFailed(rendering_log.clone()));
         }
@@ -336,7 +337,7 @@ fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut R
     let qr_code = match QrCode::new(val.to_string()){
         Ok(qr_code) => qr_code,
         Err(e) => {
-            eprintln!("Couldn't create qr code: {}", e);
+            error!("Couldn't create qr code: {}", e);
             return Err(RenderError::from(RenderErrorReason::Other(format!("Couldn't create qr code: {}", e))));
         }
     };
@@ -426,7 +427,7 @@ fn initial_letter_find_first_text(node: &Handle, first_letter_str: & mut String)
 fn check_initial_letter_class(node: &Handle) -> bool{
     let mut has_initial_letter_class = false;
 
-    println!("{:?}", node.data);
+    debug!("{:?}", node.data);
 
     if let NodeData::Element { ref attrs, .. } = node.data{
         let attrs = attrs.borrow();
@@ -521,7 +522,7 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
             let stderr = String::from_utf8(res1.stderr).unwrap_or("".to_string());
             let res = format!("Weasyprint ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
             rendering_log.push_str(&res);
-            println!("Weasyprint ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
+            debug!("Weasyprint ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
             Ok(())
         },
         Err(e) => {
@@ -572,7 +573,7 @@ pub fn render_vivliostyle_export_step(step: VivliostyleExportStep, temp_dir: &Pa
 }
 
 pub fn render_pandoc_export_step(step: PandocExportStep, temp_dir: &PathBuf, rendering_log: &mut String) -> Result<(), RenderingError>{
-    println!("Started rendering pandoc export step.");
+    debug!("Started rendering pandoc export step.");
     let mut command = Command::new("bwrap");
 
     command.arg("--unshare-all").arg("--bind").arg(temp_dir).arg("/data").arg("--ro-bind").arg("rendering-envs/pandoc").arg("/env").arg("/env/pandoc");
