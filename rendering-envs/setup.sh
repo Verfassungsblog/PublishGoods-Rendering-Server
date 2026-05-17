@@ -74,24 +74,6 @@ fi
 # Step 2: Create a new vivliostyle directory
 mkdir vivliostyle
 
-# Step 4: Download the latest stable version of Node.js using curl
-NODE_VERSION=$(curl -sL https://nodejs.org/dist/latest/ | grep -oP 'node-v\K[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-NODE_TAR="node-v$NODE_VERSION-linux-x64.tar.xz"
-NODE_URL="https://nodejs.org/dist/latest/$NODE_TAR"
-mkdir vivliostyle/node-build
-
-# Download the Node.js source code into the node-build subdirectory
-curl -o "vivliostyle/node-build/$NODE_TAR" "$NODE_URL"
-
-# Extract the downloaded archive into the node-build subdirectory
-tar -xf "vivliostyle/node-build/$NODE_TAR" -C vivliostyle/node-build --strip-components=1
-
-# Copy the newly created node binary to the vivliostyle directory
-cp vivliostyle/node-build/bin/node vivliostyle/node
-
-# Clean up by removing the node-build subdirectory
-rm -rf vivliostyle/node-build
-
 # Install Vivliostyle CLI in the vivliostyle directory using the new node binary
 cd vivliostyle || exit 1
 npm install @vivliostyle/cli
