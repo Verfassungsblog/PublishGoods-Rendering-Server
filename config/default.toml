@@ -7,3 +7,5 @@ revocation_list_path = "certs/crl.der"
 temp_template_path = "templates"
 # Number of rendering requests to be executed concurrently
 max_rendering_threads = 10
+# Max runtime in seconds for a single export step. The rendering process gets killed and the job fails if exceeded
+rendering_timeout_secs = 600

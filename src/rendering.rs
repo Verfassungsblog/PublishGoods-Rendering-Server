@@ -4,7 +4,8 @@ use std::io::Cursor;
 use std::ops::DerefMut;
 use std::panic::set_hook;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -33,6 +34,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
     loop{
         if subthreads_num.load(Ordering::SeqCst) >= settings.max_rendering_threads {
             println!("Too many running subthreads, waiting for one to end.");
+            tokio::time::sleep(Duration::from_millis(500)).await;
             continue;
         }
         let next_job = storage.request_queue.write().unwrap().pop_front();
@@ -42,10 +44,12 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
 
             let render_request = Arc::new(job);
             let storage_cpy = Arc::clone(&storage);
-            let subthreads_num_cpy = Arc::clone(&subthreads_num);
+            // Reserve the slot right away and release it whenever the task ends (success, failure or panic)
+            let slot_guard = RenderingSlotGuard::acquire(Arc::clone(&subthreads_num));
+            let timeout = Duration::from_secs(settings.rendering_timeout_secs);
 
             tokio::spawn(async move{
-                subthreads_num_cpy.fetch_add(1, Ordering::SeqCst);
+                let _slot_guard = slot_guard;
 
                 // Get export formats to render
                 let mut export_formats_queue = render_request.export_formats.clone();
@@ -66,7 +70,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
                     let storage_cpy2 = storage_cpy.clone();
 
                     join_set.spawn(tokio::task::spawn_blocking(move || {
-                        match render_export_format(export_format_slug, Arc::clone(&storage_cpy2), Arc::clone(&render_request_cpy)){
+                        match render_export_format(export_format_slug, Arc::clone(&storage_cpy2), Arc::clone(&render_request_cpy), timeout){
                             Ok(res) => {
                                 Ok(res)
                             },
@@ -129,9 +133,7 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
                 // Update status
                 if let Some(status) = request_status_storage.write().unwrap().get_mut(&render_request.request_id){
                     *status = RenderingStatus::Finished(RenderingResult{files: res_files})
-                }
-
-                subthreads_num_cpy.fetch_sub(1, Ordering::SeqCst);
+                };
             });
 
         }else{
@@ -139,6 +141,22 @@ pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
         }
 
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Counts a running rendering job in the shared counter for as long as it lives
+struct RenderingSlotGuard(Arc<AtomicU64>);
+
+impl RenderingSlotGuard{
+    fn acquire(counter: Arc<AtomicU64>) -> Self{
+        counter.fetch_add(1, Ordering::SeqCst);
+        RenderingSlotGuard(counter)
+    }
+}
+
+impl Drop for RenderingSlotGuard{
+    fn drop(&mut self){
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -150,7 +168,7 @@ pub struct ExportFormatRenderingResult{
     temp_dirs: Vec<PathBuf>,
 }
 
-pub fn render_export_format(slug: String, storage: Arc<Storage>, request: Arc<RenderingRequest>) -> Result<ExportFormatRenderingResult, RenderingError>{
+pub fn render_export_format(slug: String, storage: Arc<Storage>, request: Arc<RenderingRequest>, timeout: Duration) -> Result<ExportFormatRenderingResult, RenderingError>{
     let mut rendering_log = String::new();
 
     let export_format = match storage.template_storage.read().unwrap().get(&request.template_id){
@@ -206,9 +224,9 @@ pub fn render_export_format(slug: String, storage: Arc<Storage>, request: Arc<Re
 
         let res = match export_step.data{
             ExportStepData::Raw(raw) => render_raw_export_step(raw, &temp_directory, &request.prepared_project, &mut rendering_log),
-            ExportStepData::Vivliostyle(vivlio) => render_vivliostyle_export_step(vivlio, &temp_directory, &mut rendering_log),
-            ExportStepData::Pandoc(pan) => render_pandoc_export_step(pan, &temp_directory, &mut rendering_log),
-            ExportStepData::Weasyprint(wes) => render_weasyprint_export_step(wes, &temp_directory, &mut rendering_log),
+            ExportStepData::Vivliostyle(vivlio) => render_vivliostyle_export_step(vivlio, &temp_directory, &mut rendering_log, timeout),
+            ExportStepData::Pandoc(pan) => render_pandoc_export_step(pan, &temp_directory, &mut rendering_log, timeout),
+            ExportStepData::Weasyprint(wes) => render_weasyprint_export_step(wes, &temp_directory, &mut rendering_log, timeout),
         };
 
         if let Err(e) = res{
@@ -440,10 +458,96 @@ fn check_initial_letter_class(node: &Handle) -> bool{
     has_initial_letter_class
 }
 
+struct CommandOutput{
+    output: std::process::Output,
+    /// True if the process exceeded the timeout and got killed
+    timed_out: bool,
+}
+
+/// How long to wait for the output pipes to close after the process ended.
+/// Protects against descendants that outlive the process and keep the pipes open.
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(5);
+
+/// Reads the pipe to its end in a separate thread. The buffer is shared so already read output
+/// stays available even if the reader never finishes. The receiver gets a message once the pipe is closed.
+fn spawn_pipe_reader<R: Read + Send + 'static>(mut pipe: R) -> (Arc<std::sync::Mutex<Vec<u8>>>, std::sync::mpsc::Receiver<()>){
+    let buf = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let buf_cpy = Arc::clone(&buf);
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop{
+            match pipe.read(&mut chunk){
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf_cpy.lock().unwrap().extend_from_slice(&chunk[..n]),
+            }
+        }
+        let _ = tx.send(());
+    });
+    (buf, rx)
+}
+
+/// Waits (bounded) for the reader to finish and returns everything it read so far
+fn collect_pipe(reader: Option<(Arc<std::sync::Mutex<Vec<u8>>>, std::sync::mpsc::Receiver<()>)>, give_up_at: std::time::Instant) -> Vec<u8>{
+    match reader{
+        Some((buf, done)) => {
+            if done.recv_timeout(give_up_at.saturating_duration_since(std::time::Instant::now())).is_err(){
+                error!("Output pipe of process didn't close within {}s after the process ended, using partial output.", PIPE_DRAIN_GRACE.as_secs());
+            }
+            let data = buf.lock().unwrap().clone();
+            data
+        },
+        None => Vec::new(),
+    }
+}
+
+/// Runs the command and captures its output like [`Command::output`], but kills it if it runs longer than `timeout`.
+fn run_with_timeout(command: &mut Command, timeout: Duration) -> io::Result<CommandOutput>{
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child: Child = command.spawn()?;
+
+    // Drain the pipes in separate threads so the child can't block on a full pipe buffer
+    let stdout_reader = child.stdout.take().map(spawn_pipe_reader);
+    let stderr_reader = child.stderr.take().map(spawn_pipe_reader);
+
+    let deadline = std::time::Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop{
+        match child.try_wait(){
+            Ok(Some(status)) => break status,
+            Ok(None) => {},
+            Err(e) => {
+                // Don't leave the process running unsupervised
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        }
+        if std::time::Instant::now() >= deadline{
+            timed_out = true;
+            if let Err(e) = child.kill(){
+                error!("Couldn't kill timed out process: {}", e);
+            }
+            match child.wait(){
+                Ok(status) => break status,
+                Err(e) => return Err(e),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let give_up_at = std::time::Instant::now() + PIPE_DRAIN_GRACE;
+    let stdout = collect_pipe(stdout_reader, give_up_at);
+    let stderr = collect_pipe(stderr_reader, give_up_at);
+
+    Ok(CommandOutput{output: std::process::Output{status, stdout, stderr}, timed_out})
+}
+
 /// Calls weasyprint via bubblewrap (for isolation) and renders the html to pdf
-pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &PathBuf, rendering_log: &mut String) -> Result<(), RenderingError>{
+pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &PathBuf, rendering_log: &mut String, timeout: Duration) -> Result<(), RenderingError>{
     // Start bubblewrap
     let mut command = Command::new("bwrap");
+    command.arg("--die-with-parent");
 
     // Bubblewrap options
     command.arg("--unshare-all")
@@ -516,10 +620,15 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
     // Add weasyprint input/output files
     command.arg(format!("/data/{}", step.input_file)).arg(format!("/data/{}", step.output_file));
 
-    match command.output() {
-        Ok(res1) => {
+    match run_with_timeout(&mut command, timeout) {
+        Ok(CommandOutput{output: res1, timed_out}) => {
             let stdout = String::from_utf8(res1.stdout).unwrap_or("".to_string());
             let stderr = String::from_utf8(res1.stderr).unwrap_or("".to_string());
+            if timed_out{
+                rendering_log.push_str(&format!("Weasyprint got killed after exceeding the timeout of {}s. stdout: {:?}, stderr: {:?}", timeout.as_secs(), &stdout, &stderr));
+                error!("Weasyprint got killed after exceeding the timeout of {}s.", timeout.as_secs());
+                return Err(RenderingError::WeasyprintRenderingFailed(rendering_log.clone()))
+            }
             let res = format!("Weasyprint ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
             rendering_log.push_str(&res);
             debug!("Weasyprint ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
@@ -532,9 +641,10 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
     }
 }
 
-pub fn render_vivliostyle_export_step(step: VivliostyleExportStep, temp_dir: &PathBuf, rendering_log: &mut String) -> Result<(), RenderingError>{
+pub fn render_vivliostyle_export_step(step: VivliostyleExportStep, temp_dir: &PathBuf, rendering_log: &mut String, timeout: Duration) -> Result<(), RenderingError>{
     // Start bubblewrap
     let mut command = Command::new("bwrap");
+    command.arg("--die-with-parent");
 
     command.arg("--unshare-all").arg("--tmpfs").arg("/tmp").arg("--ro-bind").arg("/lib").arg("/lib").arg("--ro-bind").arg("/lib64").arg("/lib64").arg("--ro-bind").arg("/usr/lib").arg("/usr/lib").arg("--proc").arg("/proc").arg("--dev").arg("/dev");
 
@@ -556,8 +666,13 @@ pub fn render_vivliostyle_export_step(step: VivliostyleExportStep, temp_dir: &Pa
     command.arg("--executable-browser").arg("/env/chromium/chrome");
     command.arg("--host").arg("127.0.0.1");
 
-    match command.output() {
-        Ok(res) => {
+    match run_with_timeout(&mut command, timeout) {
+        Ok(CommandOutput{output: res, timed_out}) => {
+            if timed_out{
+                rendering_log.push_str(&format!("Vivliostyle got killed after exceeding the timeout of {}s. stdout: {:?}, stderr: {:?}", timeout.as_secs(), String::from_utf8(res.stdout), String::from_utf8(res.stderr)));
+                error!("Vivliostyle got killed after exceeding the timeout of {}s.", timeout.as_secs());
+                return Err(RenderingError::VivliostyleRenderingFailed(rendering_log.clone()))
+            }
             let res = format!("Vivliostyle ran. stdout: {:?}, stderr: {:?}", String::from_utf8(res.stdout), String::from_utf8(res.stderr));
             rendering_log.push_str(&res);
             if !res.contains("Built successfully"){
@@ -572,9 +687,10 @@ pub fn render_vivliostyle_export_step(step: VivliostyleExportStep, temp_dir: &Pa
     }
 }
 
-pub fn render_pandoc_export_step(step: PandocExportStep, temp_dir: &PathBuf, rendering_log: &mut String) -> Result<(), RenderingError>{
+pub fn render_pandoc_export_step(step: PandocExportStep, temp_dir: &PathBuf, rendering_log: &mut String, timeout: Duration) -> Result<(), RenderingError>{
     debug!("Started rendering pandoc export step.");
     let mut command = Command::new("bwrap");
+    command.arg("--die-with-parent");
 
     command.arg("--unshare-all").arg("--bind").arg(temp_dir).arg("/data").arg("--ro-bind").arg("rendering-envs/pandoc").arg("/env").arg("/env/pandoc");
 
@@ -608,10 +724,15 @@ pub fn render_pandoc_export_step(step: PandocExportStep, temp_dir: &PathBuf, ren
 
     command.arg(format!("data/{}", step.input_file));
 
-    match command.output() {
-        Ok(res1) => {
+    match run_with_timeout(&mut command, timeout) {
+        Ok(CommandOutput{output: res1, timed_out}) => {
             let stdout = String::from_utf8(res1.stdout).unwrap_or("".to_string());
             let stderr = String::from_utf8(res1.stderr).unwrap_or("".to_string());
+            if timed_out{
+                rendering_log.push_str(&format!("Pandoc got killed after exceeding the timeout of {}s. stdout: {:?}, stderr: {:?}", timeout.as_secs(), &stdout, &stderr));
+                error!("Pandoc got killed after exceeding the timeout of {}s.", timeout.as_secs());
+                return Err(RenderingError::PandocConversionFailed(rendering_log.clone()))
+            }
             let res = format!("Pandoc ran. stdout: {:?}, stderr: {:?}", &stdout, &stderr);
             rendering_log.push_str(&res);
             Ok(())
@@ -620,5 +741,44 @@ pub fn render_pandoc_export_step(step: PandocExportStep, temp_dir: &PathBuf, ren
             rendering_log.push_str(&format!("Couldn't start pandoc: {}", e));
             Err(RenderingError::PandocConversionFailed(rendering_log.clone()))
         }
+    }
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+
+    #[test]
+    fn run_with_timeout_kills_hanging_process(){
+        let start = std::time::Instant::now();
+        let res = run_with_timeout(Command::new("sleep").arg("30"), Duration::from_millis(300)).unwrap();
+        assert!(res.timed_out);
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn run_with_timeout_returns_output_of_finished_process(){
+        let res = run_with_timeout(Command::new("echo").arg("hi"), Duration::from_secs(10)).unwrap();
+        assert!(!res.timed_out);
+        assert_eq!(res.output.stdout, b"hi\n");
+    }
+
+    #[test]
+    fn run_with_timeout_does_not_hang_on_descendants_holding_pipes(){
+        // The shell exits immediately, the background sleep keeps stdout open
+        let start = std::time::Instant::now();
+        let res = run_with_timeout(Command::new("sh").arg("-c").arg("echo hi; sleep 30 &"), Duration::from_secs(10)).unwrap();
+        assert!(!res.timed_out);
+        assert_eq!(res.output.stdout, b"hi\n");
+        assert!(start.elapsed() < Duration::from_secs(15));
+    }
+
+    #[test]
+    fn slot_guard_releases_on_drop(){
+        let counter = Arc::new(AtomicU64::new(0));
+        {
+            let _guard = RenderingSlotGuard::acquire(Arc::clone(&counter));
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 }
