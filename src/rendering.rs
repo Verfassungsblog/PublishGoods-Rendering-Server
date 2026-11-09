@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
-use handlebars::{Context, DirectorySourceOptions, Handlebars, Helper, HelperResult, JsonRender, Output, RenderContext, RenderError, RenderErrorReason};
+use handlebars::{Context, DirectorySourceOptions, Handlebars, Helper, HelperDef, HelperResult, JsonRender, JsonValue, Output, RenderContext, RenderError, RenderErrorReason, ScopedJson};
 use image::Luma;
 use qrcode::QrCode;
 use qrcode::render;
@@ -315,9 +315,7 @@ pub fn render_raw_export_step(step: RawExportStep, temp_dir: &PathBuf, prepared_
         return Err(RenderingError::CouldntLoadHandlebarTemplates(e.to_string()))
     }
 
-    // Add custom handler for qr codes
-    handlebars.register_helper("qrcode", Box::new(handlebars_qrcode_helper));
-    handlebars.register_helper("initial_letter", Box::new(handlebars_initial_letter_helper));
+    register_helpers(&mut handlebars);
 
     rendering_log.push_str("Starting handlebars rendering.");
     match handlebars.render(&step.entry_point.replace(".hbs.html", ""), prepared_project){
@@ -336,6 +334,126 @@ pub fn render_raw_export_step(step: RawExportStep, temp_dir: &PathBuf, prepared_
     }
 
     Ok(())
+}
+
+/// A number as the `contains` helper sees it: integers are kept exact, everything else is an f64.
+enum LooseNumber {
+    Int(i128),
+    Float(f64),
+}
+
+/// True for plain decimal notation like `15`, `-3` or `1.50`. Signs like `+15`, leading zeros
+/// (`007`) and exponents (`1e2`) are rejected so that string IDs don't turn into numbers.
+fn is_plain_decimal(s: &str) -> bool {
+    let s = s.strip_prefix('-').unwrap_or(s);
+    let (int_part, frac_part) = match s.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (s, None),
+    };
+    let int_ok = int_part == "0" || (!int_part.starts_with('0') && !int_part.is_empty() && int_part.bytes().all(|b| b.is_ascii_digit()));
+    let frac_ok = frac_part.map_or(true, |f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()));
+    int_ok && frac_ok
+}
+
+fn loose_number(v: &JsonValue) -> Option<LooseNumber> {
+    match v {
+        JsonValue::Number(n) => match (n.as_i64(), n.as_u64()) {
+            (Some(i), _) => Some(LooseNumber::Int(i as i128)),
+            (_, Some(u)) => Some(LooseNumber::Int(u as i128)),
+            _ => n.as_f64().map(LooseNumber::Float),
+        },
+        JsonValue::String(s) if is_plain_decimal(s) => match s.split_once('.') {
+            // "15.0" is the integer 15, so it stays exact instead of going through f64
+            Some((int_part, frac)) if frac.bytes().all(|b| b == b'0') => int_part.parse::<i128>().ok().map(LooseNumber::Int),
+            Some(_) => s.parse::<f64>().ok().map(LooseNumber::Float),
+            None => s.parse::<i128>().ok().map(LooseNumber::Int),
+        },
+        _ => None,
+    }
+}
+
+fn loose_number_eq(a: &LooseNumber, b: &LooseNumber) -> bool {
+    match (a, b) {
+        (LooseNumber::Int(a), LooseNumber::Int(b)) => a == b,
+        (LooseNumber::Float(a), LooseNumber::Float(b)) => a.is_finite() && a == b,
+        // Compare exactly instead of converting the integer to f64, which would lose precision above 2^53.
+        (LooseNumber::Int(i), LooseNumber::Float(f)) | (LooseNumber::Float(f), LooseNumber::Int(i)) => {
+            f.is_finite() && f.fract() == 0.0 && f.abs() < 1e38 && *f as i128 == *i
+        }
+    }
+}
+
+/// The needle of a `contains` call with its number and text forms computed once, not per array item.
+struct ContainsNeedle<'a> {
+    value: &'a JsonValue,
+    number: Option<LooseNumber>,
+    text: Option<&'a str>,
+}
+
+impl<'a> ContainsNeedle<'a> {
+    fn new(value: &'a JsonValue) -> Self {
+        ContainsNeedle { value, number: loose_number(value), text: scalar_text(value) }
+    }
+}
+
+/// Text form of a string or boolean. Numbers have none because they are only compared numerically.
+fn scalar_text(v: &JsonValue) -> Option<&str> {
+    match v {
+        JsonValue::String(s) => Some(s),
+        JsonValue::Bool(b) => Some(if *b { "true" } else { "false" }),
+        _ => None,
+    }
+}
+
+/// Loose equality used by `contains`. Null never matches. Arrays and objects only match
+/// structurally identical values. Two strings only match if they are identical ("1.10" != "1.1").
+/// Otherwise scalars match if they are numerically equal ("15" == 15 == 15.0) or have the same
+/// text ("true" == true).
+fn loose_eq(item: &JsonValue, needle: &ContainsNeedle) -> bool {
+    match (item, needle.value) {
+        (JsonValue::Null, _) | (_, JsonValue::Null) => false,
+        (JsonValue::Array(_) | JsonValue::Object(_), _) | (_, JsonValue::Array(_) | JsonValue::Object(_)) => item == needle.value,
+        (JsonValue::String(a), JsonValue::String(b)) => a == b,
+        _ => {
+            // Skip parsing the item when the needle can't be a number anyway
+            if let Some(needle_number) = &needle.number {
+                if let Some(item_number) = loose_number(item) {
+                    return loose_number_eq(&item_number, needle_number);
+                }
+            }
+            matches!((scalar_text(item), needle.text), (Some(a), Some(b)) if a == b)
+        }
+    }
+}
+
+/// Value helper: `{{#if (contains array value)}}...{{else}}...{{/if}}`
+/// Returns true if the value is contained in the array. Scalars are compared loosely, so "15"
+/// equals 15, "true" equals true and 15.0 equals 15 (see `loose_eq`). A missing or non-array first
+/// argument is never a match.
+struct ContainsHelper;
+
+impl HelperDef for ContainsHelper {
+    fn call_inner<'reg: 'rc, 'rc>(&self, h: &Helper<'rc>, _: &'reg Handlebars<'reg>, _: &'rc Context, _: &mut RenderContext<'reg, 'rc>) -> Result<ScopedJson<'rc>, RenderError> {
+        let array_param = h.param(0).ok_or(RenderErrorReason::ParamNotFoundForIndex("contains", 0))?;
+        let needle_param = h.param(1).ok_or(RenderErrorReason::ParamNotFoundForIndex("contains", 1))?;
+
+        let found = match array_param.value() {
+            JsonValue::Array(items) => {
+                let needle = ContainsNeedle::new(needle_param.value());
+                items.iter().any(|item| loose_eq(item, &needle))
+            }
+            _ => false,
+        };
+
+        Ok(ScopedJson::Derived(JsonValue::Bool(found)))
+    }
+}
+
+/// Registers all custom helpers available in templates.
+fn register_helpers(handlebars: &mut Handlebars) {
+    handlebars.register_helper("qrcode", Box::new(handlebars_qrcode_helper));
+    handlebars.register_helper("initial_letter", Box::new(handlebars_initial_letter_helper));
+    handlebars.register_helper("contains", Box::new(ContainsHelper));
 }
 
 fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut RenderContext, out: &mut dyn Output) -> HelperResult{
@@ -780,5 +898,118 @@ mod tests{
             assert_eq!(counter.load(Ordering::SeqCst), 1);
         }
         assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    /// Renders `{{contains <haystack> <needle>}}` for a JSON object `data` and returns the resulting bool.
+    fn contains(data: &str, args: &str) -> bool {
+        let mut hb = Handlebars::new();
+        register_helpers(&mut hb);
+        let data: JsonValue = data.parse().unwrap();
+        match hb.render_template(&format!("{{{{contains {}}}}}", args), &data).unwrap().as_str() {
+            "true" => true,
+            "false" => false,
+            other => panic!("unexpected output: {}", other),
+        }
+    }
+
+    fn render(data: &str, tpl: &str) -> String {
+        let mut hb = Handlebars::new();
+        register_helpers(&mut hb);
+        let data: JsonValue = data.parse().unwrap();
+        hb.render_template(tpl, &data).unwrap()
+    }
+
+    #[test]
+    fn contains_works_in_if_and_unless(){
+        let data = r#"{"m": {"nums": [1, 15, 20], "strs": ["a", "b"]}}"#;
+        assert_eq!(render(data, "{{#if (contains m.nums 15)}}yes{{else}}no{{/if}}"), "yes");
+        assert_eq!(render(data, "{{#if (contains m.nums 16)}}yes{{else}}no{{/if}}"), "no");
+        assert_eq!(render(data, "{{#if (contains m.strs \"b\")}}yes{{else}}no{{/if}}"), "yes");
+        assert_eq!(render(data, "{{#unless (contains m.strs \"c\")}}no-match{{/unless}}"), "no-match");
+    }
+
+    #[test]
+    fn contains_as_plain_expression_renders_bool(){
+        assert_eq!(render(r#"{"nums": [15]}"#, "{{contains nums 15}}"), "true");
+    }
+
+    #[test]
+    fn contains_compares_strings_numbers_and_bools_loosely(){
+        let data = r#"{"nums": [1, 15], "mixed": ["true", "15", null]}"#;
+        assert!(contains(data, "nums \"15\""));
+        assert!(contains(data, "mixed 15"));
+        assert!(contains(data, "mixed true"));
+        assert!(!contains(data, "nums true"));
+    }
+
+    #[test]
+    fn contains_compares_numbers_numerically(){
+        let data = r#"{"floats": [1.5, 15.0], "ints": [15, 9007199254740993]}"#;
+        assert!(contains(data, "floats 15"));
+        assert!(contains(data, "floats \"1.50\""));
+        assert!(contains(data, "ints 15.0"));
+        assert!(!contains(data, "floats 2"));
+        assert!(contains(data, "ints 9007199254740993"));
+        assert!(!contains(data, "ints 9007199254740992"));
+        assert!(!contains(data, "ints 9007199254740992.0"));
+    }
+
+    #[test]
+    fn contains_keeps_whole_number_strings_exact(){
+        let data = r#"{"ints": [15, 9007199254740993], "strs": ["15.0", "9007199254740993.00"]}"#;
+        assert!(contains(data, "ints \"15.0\""));
+        assert!(contains(data, "ints \"9007199254740993.0\""));
+        assert!(!contains(data, "ints \"9007199254740992.0\""));
+        assert!(contains(data, "strs 15"));
+        assert!(contains(data, "strs 9007199254740993"));
+        assert!(!contains(data, "strs 9007199254740992"));
+    }
+
+    #[test]
+    fn contains_does_not_match_numbers_by_their_printed_form(){
+        let data = r#"{"floats": [1e100], "strs": ["1e100"]}"#;
+        assert!(!contains(data, "floats strs.[0]"));
+        assert!(!contains(data, "strs floats.[0]"));
+    }
+
+    #[test]
+    fn contains_compares_two_strings_as_text(){
+        let data = r#"{"sections": ["1.10", "2", "007", "+15", "1e2"]}"#;
+        assert!(contains(data, "sections \"1.10\""));
+        assert!(!contains(data, "sections \"1.1\""));
+        assert!(!contains(data, "sections \"2.0\""));
+        assert!(contains(data, "sections \"007\""));
+        // against a real number only plain decimal strings count as numbers
+        assert!(contains(data, "sections 2"));
+        assert!(!contains(data, "sections 7"));
+        assert!(!contains(data, "sections 15"));
+        assert!(!contains(data, "sections 100"));
+    }
+
+    #[test]
+    fn contains_compares_objects_and_arrays_structurally(){
+        let data = r#"{"authors": [{"name": "A"}, {"name": "B"}], "lists": [[1, 2]], "strs": ["[object]", "1,2"], "a": {"name": "B"}, "b": {"name": "C"}, "l": [1, 2]}"#;
+        assert!(contains(data, "authors a"));
+        assert!(!contains(data, "authors b"));
+        assert!(!contains(data, "strs a"));
+        assert!(contains(data, "lists l"));
+        assert!(!contains(data, "strs l"));
+    }
+
+    #[test]
+    fn contains_requires_both_arguments(){
+        let mut hb = Handlebars::new();
+        register_helpers(&mut hb);
+        let data: JsonValue = r#"{"nums": [1]}"#.parse().unwrap();
+        assert!(hb.render_template("{{contains nums}}", &data).is_err());
+        assert!(hb.render_template("{{contains}}", &data).is_err());
+    }
+
+    #[test]
+    fn contains_missing_or_non_array_is_false(){
+        let data = r#"{"strs": ["a"], "title": "abc"}"#;
+        assert!(!contains(data, "missing 1"));
+        assert!(!contains(data, "strs missing"));
+        assert!(!contains(data, "title \"a\""));
     }
 }
