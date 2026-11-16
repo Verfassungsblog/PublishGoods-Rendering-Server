@@ -735,6 +735,8 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
         }
     }
 
+    command.arg("--custom-metadata");
+
     // Add weasyprint input/output files
     command.arg(format!("/data/{}", step.input_file)).arg(format!("/data/{}", step.output_file));
 
