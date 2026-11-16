@@ -735,6 +735,11 @@ pub fn render_weasyprint_export_step(step: WeasyprintExportStep, temp_dir: &Path
         }
     }
 
+    // Add optional XMP metadata files (paths relative to the data directory)
+    for xmp_file in step.xmp_metadata_files.iter().flatten().map(|f| f.trim()).filter(|f| !f.is_empty()){
+        command.arg("--xmp-metadata").arg(format!("/data/{}", xmp_file));
+    }
+
     command.arg("--custom-metadata");
 
     // Add weasyprint input/output files
