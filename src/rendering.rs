@@ -1,18 +1,13 @@
 use std::{fs, io};
-use std::fmt::format;
-use std::io::Cursor;
+use std::rc::Rc;
 use std::ops::DerefMut;
-use std::panic::set_hook;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use base64::Engine;
-use base64::prelude::BASE64_STANDARD;
 use handlebars::{Context, DirectorySourceOptions, Handlebars, Helper, HelperDef, HelperResult, JsonRender, JsonValue, Output, RenderContext, RenderError, RenderErrorReason, ScopedJson};
-use image::Luma;
 use qrcode::QrCode;
 use qrcode::render;
 use tokio::task::JoinSet;
@@ -21,12 +16,13 @@ use vb_exchange::export_formats::{ExportStepData, PandocExportStep, RawExportSte
 use vb_exchange::projects::PreparedProject;
 use crate::settings::Settings;
 use crate::storage::Storage;
-use html5ever::{parse_document, serialize};
+use html5ever::{local_name, ns, parse_document, parse_fragment, serialize, QualName};
+use html5ever::tree_builder::{NodeOrText, TreeSink};
 use html5ever::tendril::{StrTendril, TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom, SerializableHandle};
 use svg::Document;
-use svg::node::element::{Text, Rectangle};
-use log::{debug, error};
+use svg::node::element::Text;
+use log::{debug, error, warn};
 
 pub async fn rendering_worker(storage: Arc<Storage>, settings: Arc<Settings>) {
     let subthreads_num = Arc::new(AtomicU64::new(0));
@@ -454,6 +450,354 @@ fn register_helpers(handlebars: &mut Handlebars) {
     handlebars.register_helper("qrcode", Box::new(handlebars_qrcode_helper));
     handlebars.register_helper("initial_letter", Box::new(handlebars_initial_letter_helper));
     handlebars.register_helper("contains", Box::new(ContainsHelper));
+    handlebars.register_helper("combine_title_subtitle", Box::new(CombineTitleSubtitleHelper));
+    handlebars.register_helper("html_to_text", Box::new(HtmlToTextHelper));
+}
+
+/// Converts a helper parameter to a string. `null` becomes an empty string, numbers are printed.
+/// Booleans, arrays and objects have no sensible text form, so they are rendered as an empty string
+/// and logged instead of ending up as `true` or JSON in the output.
+fn text_param(helper: &'static str, index: usize, value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null => String::new(),
+        JsonValue::String(s) => s.clone(),
+        JsonValue::Number(_) => value.render(),
+        JsonValue::Bool(_) | JsonValue::Array(_) | JsonValue::Object(_) => {
+            warn!("{}: parameter {} must be a string or number, rendering it as empty", helper, index);
+            String::new()
+        }
+    }
+}
+
+/// Value helper: `{{html_to_text html}}`
+/// Strips all tags from an HTML string and returns the plain text with entities decoded
+/// (`<p>A &amp; B</p>` -> `A & B`). The input is parsed like a browser parses the body of a page, so
+/// the same rules apply: a literal `<` or `&` in a plain-text value has to be written as `&lt;` /
+/// `&amp;` to survive. Block-level elements and line breaks separate words, runs of whitespace are
+/// collapsed, the contents of non-text elements (`script`, `style`, `template`, `title`, form
+/// controls, ...) are dropped, and characters that are not allowed in XML 1.0 are removed.
+///
+/// The result is plain text, so `{{...}}` escaping it once for HTML/XML output is correct
+/// (`A & B` is rendered as `A &amp; B`); use `{{{...}}}` for non-markup contexts.
+struct HtmlToTextHelper;
+
+impl HelperDef for HtmlToTextHelper {
+    fn call_inner<'reg: 'rc, 'rc>(&self, h: &Helper<'rc>, _: &'reg Handlebars<'reg>, _: &'rc Context, _: &mut RenderContext<'reg, 'rc>) -> Result<ScopedJson<'rc>, RenderError> {
+        let param = h.param(0).ok_or(RenderErrorReason::ParamNotFoundForIndex("html_to_text", 0))?;
+        let html = text_param("html_to_text", 0, param.value());
+        Ok(ScopedJson::Derived(JsonValue::String(html_to_plain_text(&html))))
+    }
+}
+
+/// Elements whose contents are not text of the document.
+fn is_non_text_element(name: &QualName) -> bool {
+    name.ns == ns!(html) && matches!(&*name.local,
+        "script" | "style" | "template" | "noscript" | "title" | "textarea" | "iframe" | "noembed" | "noframes" | "select" | "datalist")
+}
+
+/// The "special" elements of the HTML parsing spec
+/// (https://html.spec.whatwg.org/multipage/parsing.html#special), which are the block-level and
+/// replaced elements. They separate words, so adjacent blocks don't run together. `wbr` is left out,
+/// as it marks a possible line break inside a word, and `legend` is added, as it is rendered as a block.
+fn is_special_element(name: &QualName) -> bool {
+    name.ns == ns!(html) && matches!(&*name.local,
+        "address" | "applet" | "area" | "article" | "aside" | "base" | "basefont" | "bgsound" | "blockquote" | "body"
+        | "br" | "button" | "caption" | "center" | "col" | "colgroup" | "dd" | "details" | "dir" | "div" | "dl" | "dt" | "embed"
+        | "fieldset" | "figcaption" | "figure" | "footer" | "form" | "frame" | "frameset" | "h1" | "h2" | "h3" | "h4" | "h5"
+        | "h6" | "head" | "header" | "hgroup" | "hr" | "html" | "iframe" | "img" | "input" | "keygen" | "legend" | "li" | "link"
+        | "listing" | "main" | "marquee" | "menu" | "meta" | "nav" | "noembed" | "noframes" | "noscript"
+        | "object" | "ol" | "p" | "param" | "plaintext" | "pre" | "script" | "search" | "section" | "select" | "source" | "style"
+        | "summary" | "table" | "tbody" | "td" | "template" | "textarea" | "tfoot" | "th" | "thead" | "title" | "tr" | "track"
+        | "ul" | "xmp")
+}
+
+/// Characters allowed in XML 1.0 documents (tab, line feed and carriage return are the only
+/// allowed control characters).
+fn is_xml_char(c: char) -> bool {
+    !matches!(c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}')
+}
+
+/// Parses an HTML snippet the way the body of a page is parsed. The nodes end up as children of the
+/// returned root element; the DOM has to be kept alive while the root is used, as dropping it
+/// empties the tree.
+fn parse_html_fragment(html: &str) -> (RcDom, Handle) {
+    let context = QualName::new(None, ns!(html), local_name!("body"));
+    let dom = parse_fragment(RcDom::default(), Default::default(), context, Vec::new(), false).one(html);
+    let root = dom.document.children.borrow()[0].clone();
+    (dom, root)
+}
+
+fn parent_of(node: &Handle) -> Option<Handle> {
+    let weak = node.parent.take()?;
+    let parent = weak.upgrade();
+    node.parent.set(Some(weak));
+    parent
+}
+
+/// Appends the text below `node` to `out`, with a space around special elements. Iterative, so
+/// deeply nested markup cannot overflow the stack. `template` contents are not children of the
+/// template element in the DOM and are skipped implicitly.
+fn collect_text(node: &Handle, out: &mut String) {
+    // `None` marks the end of a special element.
+    let mut stack = vec![Some(node.clone())];
+    while let Some(entry) = stack.pop() {
+        let Some(node) = entry else {
+            out.push(' ');
+            continue;
+        };
+        match &node.data {
+            NodeData::Text { contents } => out.push_str(&contents.borrow()),
+            NodeData::Element { name, .. } if is_non_text_element(name) => continue,
+            NodeData::Element { name, .. } if is_special_element(name) => {
+                out.push(' ');
+                stack.push(None);
+            }
+            _ => {}
+        }
+        stack.extend(node.children.borrow().iter().rev().cloned().map(Some));
+    }
+}
+
+/// Collapses runs of whitespace to a single space, trims the ends and removes characters that are
+/// not allowed in XML.
+fn normalize_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for word in text.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.extend(word.chars().filter(|&c| is_xml_char(c)));
+    }
+    out
+}
+
+fn html_to_plain_text(html: &str) -> String {
+    if !html.contains(['<', '&']) {
+        return normalize_text(html);
+    }
+    let (_dom, root) = parse_html_fragment(html);
+    let mut text = String::new();
+    collect_text(&root, &mut text);
+    normalize_text(&text)
+}
+
+/// Finds the last text node below `root` that contains more than whitespace, skipping non-text
+/// elements.
+fn last_text_node(root: &Handle) -> Option<Handle> {
+    // Children are pushed in document order, so they are visited last to first.
+    let mut stack: Vec<Handle> = root.children.borrow().clone();
+    while let Some(node) = stack.pop() {
+        match &node.data {
+            NodeData::Text { contents } if !contents.borrow().trim().is_empty() => return Some(node.clone()),
+            NodeData::Element { name, .. } if is_non_text_element(name) => {}
+            _ => stack.extend(node.children.borrow().iter().cloned()),
+        }
+    }
+    None
+}
+
+/// Comments and whitespace-only text, which don't change where a subtitle belongs.
+fn is_insignificant(node: &Handle) -> bool {
+    match &node.data {
+        NodeData::Text { contents } => contents.borrow().trim().is_empty(),
+        NodeData::Comment { .. } => true,
+        _ => false,
+    }
+}
+
+/// The text nodes below `nodes` in document order, skipping non-text elements.
+fn text_nodes(nodes: &[Handle]) -> Vec<Handle> {
+    let mut texts = Vec::new();
+    let mut stack: Vec<Handle> = nodes.iter().rev().cloned().collect();
+    while let Some(node) = stack.pop() {
+        match &node.data {
+            NodeData::Text { .. } => texts.push(node),
+            NodeData::Element { name, .. } if is_non_text_element(name) => {}
+            _ => stack.extend(node.children.borrow().iter().rev().cloned()),
+        }
+    }
+    texts
+}
+
+/// Whether a block-level element with content is among `nodes` or below them. Such a subtitle cannot
+/// be placed inside the title's block without nesting blocks in it.
+fn contains_block(nodes: &[Handle]) -> bool {
+    let mut stack = nodes.to_vec();
+    while let Some(node) = stack.pop() {
+        if let NodeData::Element { name, .. } = &node.data {
+            if is_special_element(name) && !node.children.borrow().is_empty() {
+                return true;
+            }
+        }
+        stack.extend(node.children.borrow().iter().cloned());
+    }
+    false
+}
+
+enum SubtitleContent {
+    /// Inline markup that can be moved into the title.
+    Nodes(Vec<Handle>),
+    /// Plain text of a subtitle whose markup would not fit into the title's block.
+    Text(String),
+}
+
+/// What goes after the separator. A single block wrapper is removed (`<p>Sub</p>` -> `Sub`) so the
+/// subtitle can be placed inside the title's block; a subtitle with further block-level content is
+/// reduced to its text, as it cannot be nested inside the title.
+fn subtitle_content(root: &Handle) -> SubtitleContent {
+    let mut nodes = root.children.borrow().clone();
+    loop {
+        let mut content = nodes.iter().filter(|n| !is_insignificant(n));
+        let (Some(only), None) = (content.next(), content.next()) else { break };
+        let unwrap = matches!(&only.data, NodeData::Element { name, .. } if is_special_element(name) && !is_non_text_element(name))
+            && !only.children.borrow().is_empty();
+        if !unwrap {
+            break;
+        }
+        let children = only.children.borrow().clone();
+        nodes = children;
+    }
+    if contains_block(&nodes) {
+        let mut text = String::new();
+        for node in &nodes {
+            collect_text(node, &mut text);
+        }
+        return SubtitleContent::Text(normalize_text(&text));
+    }
+
+    // Leading and trailing whitespace is dropped, also inside inline wrappers (`<em> Sub </em>`).
+    let texts = text_nodes(&nodes);
+    for node in &texts {
+        let NodeData::Text { contents } = &node.data else { unreachable!() };
+        let trimmed = StrTendril::from(contents.borrow().trim_start());
+        let done = !trimmed.is_empty();
+        *contents.borrow_mut() = trimmed;
+        if done {
+            break;
+        }
+    }
+    for node in texts.iter().rev() {
+        let NodeData::Text { contents } = &node.data else { unreachable!() };
+        let trimmed = StrTendril::from(contents.borrow().trim_end());
+        let done = !trimmed.is_empty();
+        *contents.borrow_mut() = trimmed;
+        if done {
+            break;
+        }
+    }
+    SubtitleContent::Nodes(nodes)
+}
+
+/// Normalizes an HTML snippet the same way `combine_title_subtitle` serializes its result, so every
+/// return path has the same escaping (`&` -> `&amp;`) and leaves out characters not allowed in XML.
+fn normalize_html(html: &str) -> String {
+    if !html.contains(['<', '&', '>']) {
+        return html.chars().filter(|&c| is_xml_char(c)).collect();
+    }
+    let (_dom, root) = parse_html_fragment(html);
+    serialize_children(&root)
+}
+
+fn serialize_children(root: &Handle) -> String {
+    let mut buffer = Vec::new();
+    let root: SerializableHandle = root.clone().into();
+    serialize(&mut buffer, &root, Default::default()).expect("serializing to a Vec cannot fail");
+    // `&nbsp;` is the only named entity the serializer writes and it is not defined in XML.
+    String::from_utf8(buffer).expect("serializer writes UTF-8").replace("&nbsp;", "\u{a0}").chars().filter(|&c| is_xml_char(c)).collect()
+}
+
+/// Characters after which a subtitle follows without a colon ("Warum? Untertitel").
+const TITLE_TERMINAL_PUNCTUATION: [char; 12] = ['?', '!', '.', ':', ';', ',', '\u{2026}', '\u{2013}', '\u{2014}', '-', '\u{ff1f}', '\u{ff01}'];
+/// Closing quotes that may follow the terminal punctuation (`"Warum?"`). Brackets are not included:
+/// in "Verfassung (3. Aufl.)" the period ends the bracket, not the title.
+const TITLE_TRAILING_QUOTES: [char; 11] = ['"', '\'', '\u{bb}', '\u{ab}', '\u{201c}', '\u{201d}', '\u{201e}', '\u{2018}', '\u{2019}', '\u{203a}', '\u{2039}'];
+
+/// Value helper: `{{combine_title_subtitle title subtitle}}`
+/// Joins title and subtitle with a space if the title ends with terminal punctuation (`? ! . : ; ,
+/// - – — …`, optionally followed by closing quotes), otherwise as "Title: Subtitle".
+/// Markup in the title is ignored when looking at its last character and is kept in the output. The
+/// subtitle is placed right after the title's last text, inside the innermost block element around
+/// it (`<p>Titel</p>` -> `<p>Titel: Untertitel</p>`, `Das <em>GG</em>` -> `Das <em>GG</em>: Untertitel`).
+/// A single block wrapper around the subtitle is removed; a subtitle with more block-level content
+/// (several paragraphs, lists, tables) is inserted as plain text. A missing subtitle or one without
+/// text yields just the title, a title without text just the subtitle.
+///
+/// The result is always re-serialized HTML (a plain `&` becomes `&amp;`, void elements are written
+/// as `<br>`), so output it with `{{{...}}}` in HTML. It is not well-formed XML: for XML/XMP output
+/// wrap it in `html_to_text` and use `{{...}}`.
+struct CombineTitleSubtitleHelper;
+
+impl HelperDef for CombineTitleSubtitleHelper {
+    fn call_inner<'reg: 'rc, 'rc>(&self, h: &Helper<'rc>, _: &'reg Handlebars<'reg>, _: &'rc Context, _: &mut RenderContext<'reg, 'rc>) -> Result<ScopedJson<'rc>, RenderError> {
+        let title_param = h.param(0).ok_or(RenderErrorReason::ParamNotFoundForIndex("combine_title_subtitle", 0))?;
+        let title = text_param("combine_title_subtitle", 0, title_param.value());
+        let title = title.trim();
+        let subtitle = h.param(1).map(|p| text_param("combine_title_subtitle", 1, p.value())).unwrap_or_default();
+        let subtitle = subtitle.trim();
+        if subtitle.is_empty() {
+            return Ok(ScopedJson::Derived(JsonValue::String(normalize_html(title))));
+        }
+        Ok(ScopedJson::Derived(JsonValue::String(combine_title_subtitle(title, subtitle))))
+    }
+}
+
+fn combine_title_subtitle(title: &str, subtitle: &str) -> String {
+    let (subtitle_dom, subtitle_root) = parse_html_fragment(subtitle);
+    if last_text_node(&subtitle_root).is_none() {
+        return normalize_html(title);
+    }
+    let (title_dom, title_root) = parse_html_fragment(title);
+    let Some(last_text) = last_text_node(&title_root) else {
+        return normalize_html(subtitle);
+    };
+
+    let mut title_text = String::new();
+    collect_text(&title_root, &mut title_text);
+    let ends_with_punctuation = title_text.trim_end().trim_end_matches(TITLE_TRAILING_QUOTES).ends_with(TITLE_TERMINAL_PUNCTUATION);
+    let separator = if ends_with_punctuation { " " } else { ": " };
+
+    if let NodeData::Text { contents } = &last_text.data {
+        let trimmed = StrTendril::from(contents.borrow().trim_end());
+        *contents.borrow_mut() = trimmed;
+    }
+    // Insert after the outermost inline ancestor that ends with the last text, inside the nearest
+    // block. An inline element with more content after the text (`<span>Titel<br></span>`) is not
+    // left, so the subtitle stays in front of that content.
+    let mut anchor = last_text;
+    let (parent, next_sibling) = loop {
+        let parent = parent_of(&anchor).expect("the title root is an ancestor");
+        let next_sibling = {
+            let siblings = parent.children.borrow();
+            let index = siblings.iter().position(|n| Rc::ptr_eq(n, &anchor)).expect("anchor is a child of its parent");
+            let ends_parent = siblings[index + 1..].iter().all(is_insignificant);
+            let inline = matches!(&parent.data, NodeData::Element { name, .. } if !is_special_element(name)) && !Rc::ptr_eq(&parent, &title_root);
+            if ends_parent && inline {
+                None
+            } else {
+                Some(siblings.get(index + 1).cloned())
+            }
+        };
+        match next_sibling {
+            Some(next_sibling) => break (parent, next_sibling),
+            None => anchor = parent,
+        }
+    };
+    let insert = |child: NodeOrText<Handle>| match &next_sibling {
+        Some(sibling) => title_dom.append_before_sibling(sibling, child),
+        None => title_dom.append(&parent, child),
+    };
+
+    insert(NodeOrText::AppendText(StrTendril::from(separator)));
+    match subtitle_content(&subtitle_root) {
+        SubtitleContent::Nodes(nodes) => {
+            for node in nodes {
+                subtitle_dom.remove_from_parent(&node);
+                insert(NodeOrText::AppendNode(node));
+            }
+        }
+        SubtitleContent::Text(text) => insert(NodeOrText::AppendText(StrTendril::from(text))),
+    }
+    serialize_children(&title_root)
 }
 
 fn handlebars_qrcode_helper(h: &Helper, _: &Handlebars, _: &Context, _rc: &mut RenderContext, out: &mut dyn Output) -> HelperResult{
@@ -1018,5 +1362,275 @@ mod tests{
         assert!(!contains(data, "missing 1"));
         assert!(!contains(data, "strs missing"));
         assert!(!contains(data, "title \"a\""));
+    }
+
+    #[test]
+    fn combine_title_subtitle_uses_colon_after_alphanumeric_title(){
+        let data = r#"{"t": "Titel", "s": "Untertitel"}"#;
+        assert_eq!(render(data, "{{combine_title_subtitle t s}}"), "Titel: Untertitel");
+        assert_eq!(render(r#"{"t": "Band 2", "s": "Teil"}"#, "{{combine_title_subtitle t s}}"), "Band 2: Teil");
+    }
+
+    #[test]
+    fn combine_title_subtitle_uses_space_after_special_character(){
+        for title in ["Warum?", "Achtung!", "Titel.", "Titel:", "Titel –", "Titel,", "Titel…"] {
+            let data = format!(r#"{{"t": "{}", "s": "Untertitel"}}"#, title);
+            assert_eq!(render(&data, "{{combine_title_subtitle t s}}"), format!("{} Untertitel", title));
+        }
+    }
+
+    #[test]
+    fn combine_title_subtitle_uses_colon_after_brackets_and_quotes(){
+        for title in ["Verfassung (Neuauflage)", "Das \\\"Grundgesetz\\\"", "C++", "100%"] {
+            let data = format!(r#"{{"t": "{}", "s": "Kommentar"}}"#, title);
+            assert_eq!(render(&data, "{{{combine_title_subtitle t s}}}"), format!("{}: Kommentar", title.replace("\\\"", "\"")));
+        }
+    }
+
+    #[test]
+    fn combine_title_subtitle_ignores_markup_when_checking_last_character(){
+        let data = r#"{"t": "Das <em>Grundgesetz</em>", "s": "Kommentar"}"#;
+        assert_eq!(render(data, "{{{combine_title_subtitle t s}}}"), "Das <em>Grundgesetz</em>: Kommentar");
+        let data = r#"{"t": "Warum <em>nur</em>?", "s": "Kommentar"}"#;
+        assert_eq!(render(data, "{{{combine_title_subtitle t s}}}"), "Warum <em>nur</em>? Kommentar");
+    }
+
+    #[test]
+    fn combine_title_subtitle_inserts_subtitle_inside_block_wrapper(){
+        let data = r#"{"t": "<p>Titel</p>", "s": "Untertitel"}"#;
+        assert_eq!(render(data, "{{{combine_title_subtitle t s}}}"), "<p>Titel: Untertitel</p>");
+        let data = r#"{"t": "<div><h1>Warum <em>nur</em>?</h1>\n</div>", "s": "Kommentar"}"#;
+        assert_eq!(render(data, "{{{combine_title_subtitle t s}}}"), "<div><h1>Warum <em>nur</em>? Kommentar</h1>\n</div>");
+        // inline markup stays around the title only
+        let data = r#"{"t": "Das <em>Grundgesetz</em>", "s": "Kommentar"}"#;
+        assert_eq!(render(data, "{{{combine_title_subtitle t s}}}"), "Das <em>Grundgesetz</em>: Kommentar");
+    }
+
+    #[test]
+    fn combine_title_subtitle_treats_markup_only_title_as_empty(){
+        assert_eq!(render(r#"{"t": "<p></p>", "s": "Untertitel"}"#, "{{{combine_title_subtitle t s}}}"), "Untertitel");
+        assert_eq!(render(r#"{"t": "<p> <br> </p>", "s": "Untertitel"}"#, "{{{combine_title_subtitle t s}}}"), "Untertitel");
+    }
+
+    #[test]
+    fn combine_title_subtitle_looks_through_closing_quotes(){
+        for title in ["\\\"Warum?\\\"", "\u{201e}Warum?\u{201c}", "Was ist das\u{ff1f}","\u{bb}Warum?\u{ab}", "Das <em>Recht?</em>\u{201d}"] {
+            let data = format!(r#"{{"t": "{}", "s": "Untertitel"}}"#, title);
+            assert_eq!(render(&data, "{{{combine_title_subtitle t s}}}"), format!("{} Untertitel", title.replace("\\\"", "\"")));
+        }
+    }
+
+    #[test]
+    fn html_to_text_survives_deeply_nested_markup(){
+        // the tree builder's scope checks make parsing quadratic in the nesting depth, so this checks
+        // the walk is iterative at a depth that still parses quickly
+        let html = "<div><b>".repeat(5_000) + "x";
+        let data = JsonValue::from_iter([("h", JsonValue::String(html))]);
+        let mut hb = Handlebars::new();
+        register_helpers(&mut hb);
+        assert_eq!(hb.render_template("{{html_to_text h}}", &data).unwrap(), "x");
+    }
+
+    #[test]
+    fn html_to_text_drops_other_raw_text_and_form_elements(){
+        let data = r#"{"h": "A<iframe><b>x</b></iframe>BC<noembed>n</noembed><select><option>o</option></select>D<datalist><option>d</option></datalist>E"}"#;
+        assert_eq!(render(data, "{{html_to_text h}}"), "ABCDE");
+    }
+
+    #[test]
+    fn html_to_text_drops_nested_template_content(){
+        let data = r#"{"h": "A<template>x<template>y</template>z</template>B"}"#;
+        assert_eq!(render(data, "{{html_to_text h}}"), "AB");
+    }
+
+    #[test]
+    fn combine_title_subtitle_and_html_to_text_compose(){
+        let data = r#"{"t": "Das <em>Grundgesetz</em>", "s": "Kommentar &amp; Materialien"}"#;
+        assert_eq!(render(data, "{{{html_to_text (combine_title_subtitle t s)}}}"), "Das Grundgesetz: Kommentar & Materialien");
+    }
+
+    #[test]
+    fn helpers_render_booleans_arrays_and_objects_as_empty(){
+        let data = r#"{"a": ["x"], "o": {"k": 1}, "b": true, "t": "Titel"}"#;
+        assert_eq!(render(data, "[{{html_to_text a}}]"), "[]");
+        assert_eq!(render(data, "[{{html_to_text o}}]"), "[]");
+        assert_eq!(render(data, "[{{html_to_text b}}]"), "[]");
+        assert_eq!(render(data, "{{combine_title_subtitle a t}}"), "Titel");
+        assert_eq!(render(data, "{{combine_title_subtitle t a}}"), "Titel");
+        assert_eq!(render(data, "{{combine_title_subtitle t b}}"), "Titel");
+    }
+
+    #[test]
+    fn combine_title_subtitle_does_not_look_into_brackets(){
+        for title in ["Verfassung (3. Aufl.)", "Verfassung (Was nun?)", "Band [Teil 2.]"] {
+            let data = format!(r#"{{"t": "{}", "s": "Kommentar"}}"#, title);
+            assert_eq!(render(&data, "{{{combine_title_subtitle t s}}}"), format!("{}: Kommentar", title));
+        }
+    }
+
+    #[test]
+    fn combine_title_subtitle_places_subtitle_before_trailing_breaks_and_comments(){
+        assert_eq!(render(r#"{"t": "Titel<br>", "s": "Sub"}"#, "{{{combine_title_subtitle t s}}}"), "Titel: Sub<br>");
+        assert_eq!(render(r#"{"t": "<p>Titel <!-- x --></p>", "s": "Sub"}"#, "{{{combine_title_subtitle t s}}}"), "<p>Titel: Sub<!-- x --></p>");
+        assert_eq!(render(r#"{"t": "<p>Titel<span></span></p>", "s": "Sub"}"#, "{{{combine_title_subtitle t s}}}"), "<p>Titel: Sub<span></span></p>");
+    }
+
+    #[test]
+    fn combine_title_subtitle_treats_markup_only_subtitle_as_empty(){
+        for subtitle in ["<p></p>", "<p><br></p>", "<!-- x -->", "<p> <em> </em> </p>"] {
+            let data = format!(r#"{{"t": "<p>Titel</p>", "s": "{}"}}"#, subtitle);
+            assert_eq!(render(&data, "{{{combine_title_subtitle t s}}}"), "<p>Titel</p>", "{}", subtitle);
+        }
+    }
+
+    #[test]
+    fn combine_title_subtitle_inserts_block_subtitles_as_text(){
+        assert_eq!(render(r#"{"t": "<h1>Titel</h1>", "s": "<p>A</p><p>B &amp; C</p>"}"#, "{{{combine_title_subtitle t s}}}"), "<h1>Titel: A B &amp; C</h1>");
+        assert_eq!(render(r#"{"t": "<p>T</p>", "s": "x<p>y</p>"}"#, "{{{combine_title_subtitle t s}}}"), "<p>T: x y</p>");
+        assert_eq!(render(r#"{"t": "Titel", "s": "<table><tr><td>A</td><td>B</td></tr></table>"}"#, "{{{combine_title_subtitle t s}}}"), "Titel: A B");
+        // inline markup and empty elements like <br> stay
+        assert_eq!(render(r#"{"t": "<p>T</p>", "s": "<p><em>x</em><br>y</p>"}"#, "{{{combine_title_subtitle t s}}}"), "<p>T: <em>x</em><br>y</p>");
+    }
+
+    #[test]
+    fn combine_title_subtitle_stays_before_content_after_the_last_text(){
+        assert_eq!(render(r#"{"t": "<span>Titel<br></span>", "s": "Sub"}"#, "{{{combine_title_subtitle t s}}}"), "<span>Titel: Sub<br></span>");
+        assert_eq!(render(r#"{"t": "<b><i>Titel</i> <!-- x --></b>", "s": "Sub"}"#, "{{{combine_title_subtitle t s}}}"), "<b><i>Titel</i> <!-- x --></b>: Sub");
+    }
+
+    #[test]
+    fn combine_title_subtitle_trims_whitespace_inside_inline_wrappers(){
+        assert_eq!(render(r#"{"t": "Titel", "s": "<em> Sub </em>"}"#, "{{{combine_title_subtitle t s}}}"), "Titel: <em>Sub</em>");
+        assert_eq!(render(r#"{"t": "Titel", "s": "<b> </b> <em> Sub <i>x</i> </em> "}"#, "{{{combine_title_subtitle t s}}}"), "Titel: <b></b><em>Sub <i>x</i></em>");
+    }
+
+    #[test]
+    fn combine_title_subtitle_unwraps_block_wrapped_subtitle(){
+        assert_eq!(render(r#"{"t": "<p>Titel</p>", "s": "<p>Sub</p>"}"#, "{{{combine_title_subtitle t s}}}"), "<p>Titel: Sub</p>");
+        assert_eq!(render(r#"{"t": "Titel", "s": "<div><p> Sub <em>x</em> </p></div>"}"#, "{{{combine_title_subtitle t s}}}"), "Titel: Sub <em>x</em>");
+    }
+
+    #[test]
+    fn combine_title_subtitle_escapes_text_in_html_output(){
+        let data = r#"{"t": "Tom & Jerry Show", "s": "a < b"}"#;
+        assert_eq!(render(data, "{{{combine_title_subtitle t s}}}"), "Tom &amp; Jerry\u{a0}Show: a &lt; b");
+        // html_to_text collapses the non-breaking space like any other whitespace
+        assert_eq!(render(data, "{{html_to_text (combine_title_subtitle t s)}}"), "Tom &amp; Jerry Show: a &lt; b");
+    }
+
+    #[test]
+    fn html_to_text_keeps_xmp_and_svg_title_text(){
+        assert_eq!(render(r#"{"h": "A<xmp><i>y</i></xmp>B"}"#, "{{{html_to_text h}}}"), "A <i>y</i> B");
+        assert_eq!(render(r#"{"h": "A<svg><title>T</title></svg>B"}"#, "{{html_to_text h}}"), "ATB");
+    }
+
+    #[test]
+    fn html_to_text_follows_html_parsing_rules_for_select(){
+        // a nested <select> closes the outer one, as in a browser
+        assert_eq!(render(r#"{"h": "A<select><select>B"}"#, "{{html_to_text h}}"), "AB");
+    }
+
+    #[test]
+    fn html_to_text_separates_spec_block_elements(){
+        for (html, text) in [
+            ("<details><summary>A</summary>B</details>C", "A B C"),
+            ("<fieldset><legend>A</legend>B</fieldset>", "A B"),
+            ("<hgroup><h1>A</h1></hgroup>B<center>C</center>", "A B C"),
+            ("<menu><li>A</li><li>B</li></menu>", "A B"),
+            ("Wort<wbr>trennung", "Worttrennung"),
+        ] {
+            let data = format!(r#"{{"h": "{}"}}"#, html);
+            assert_eq!(render(&data, "{{html_to_text h}}"), text, "{}", html);
+        }
+    }
+
+    #[test]
+    fn html_to_text_removes_characters_not_allowed_in_xml(){
+        assert_eq!(render(r#"{"h": "x\u0000y\u0001z"}"#, "{{html_to_text h}}"), "xyz");
+        assert_eq!(render(r#"{"h": "x<b>\u0000</b>y"}"#, "{{html_to_text h}}"), "xy");
+        assert_eq!(render(r#"{"h": "A&#x1;B&#xFFFE;C"}"#, "{{html_to_text h}}"), "ABC");
+        assert_eq!(render(r#"{"t": "A&#x1;B", "s": "C"}"#, "{{{combine_title_subtitle t s}}}"), "AB: C");
+    }
+
+    #[test]
+    fn combine_title_subtitle_escapes_the_same_without_subtitle_or_title(){
+        let title = r#"{"t": "Tom & Jerry\u0001", "s": "Sub & Co\u0001"}"#;
+        assert_eq!(render(title, "{{{combine_title_subtitle t}}}"), "Tom &amp; Jerry");
+        assert_eq!(render(title, "{{{combine_title_subtitle t s}}}"), "Tom &amp; Jerry: Sub &amp; Co");
+        assert_eq!(render(r#"{"t": "<p></p>", "s": "Sub & Co\u0001"}"#, "{{{combine_title_subtitle t s}}}"), "Sub &amp; Co");
+        assert_eq!(render(r#"{"t": "Tom\u0001"}"#, "{{{combine_title_subtitle t}}}"), "Tom");
+    }
+
+    #[test]
+    fn combine_title_subtitle_handles_missing_subtitle(){
+        assert_eq!(render(r#"{"t": "Titel", "s": null}"#, "{{combine_title_subtitle t s}}"), "Titel");
+        assert_eq!(render(r#"{"t": "Titel"}"#, "{{combine_title_subtitle t missing}}"), "Titel");
+        assert_eq!(render(r#"{"t": "Titel", "s": "  "}"#, "{{combine_title_subtitle t s}}"), "Titel");
+        assert_eq!(render(r#"{"t": "Titel"}"#, "{{combine_title_subtitle t}}"), "Titel");
+    }
+
+    #[test]
+    fn combine_title_subtitle_requires_title_param(){
+        let mut hb = Handlebars::new();
+        register_helpers(&mut hb);
+        assert!(hb.render_template("{{combine_title_subtitle}}", &JsonValue::Null).is_err());
+    }
+
+    #[test]
+    fn html_to_text_strips_tags_and_decodes_entities(){
+        let data = r#"{"h": "<p>Tom &amp; <em>Jerry</em> &lt;3 &quot;x&quot;</p>"}"#;
+        assert_eq!(render(data, "{{{html_to_text h}}}"), "Tom & Jerry <3 \"x\"");
+    }
+
+    #[test]
+    fn html_to_text_result_is_escaped_once_by_double_braces(){
+        // the plain text "Titel & Co" is escaped exactly once for HTML/XML output
+        let data = r#"{"h": "<b>Titel</b> &amp; Co"}"#;
+        assert_eq!(render(data, "<title>{{html_to_text h}}</title>"), "<title>Titel &amp; Co</title>");
+        assert_eq!(render(data, "{{{html_to_text h}}}"), "Titel & Co");
+    }
+
+    #[test]
+    fn html_to_text_separates_all_block_elements(){
+        for html in ["<section>A</section><section>B</section>", "<dl><dt>A</dt><dd>B</dd></dl>", "<figure>A<figcaption>B</figcaption></figure>", "<article>A</article><aside>B</aside>", "<header>A</header><footer>B</footer>"] {
+            let data = format!(r#"{{"h": "{}"}}"#, html);
+            assert_eq!(render(&data, "{{html_to_text h}}"), "A B", "{}", html);
+        }
+    }
+
+    #[test]
+    fn html_to_text_drops_noscript_title_and_textarea(){
+        let data = r#"{"h": "A<noscript><p>fallback</p></noscript>B<title>T</title><textarea>X</textarea>C"}"#;
+        assert_eq!(render(data, "{{html_to_text h}}"), "ABC");
+    }
+
+    #[test]
+    fn html_to_text_keeps_plain_text_without_markup(){
+        assert_eq!(render(r#"{"h": "  a   b\n c "}"#, "{{html_to_text h}}"), "a b c");
+        assert_eq!(render(r#"{"h": "Q&amp;A &copy; 2020"}"#, "{{{html_to_text h}}}"), "Q&A © 2020");
+        assert_eq!(render(r#"{"h": 42}"#, "{{html_to_text h}}"), "42");
+    }
+
+    #[test]
+    fn html_to_text_separates_blocks_and_collapses_whitespace(){
+        let data = r#"{"h": "<h1>Titel</h1><p>Zeile 1<br>Zeile 2</p>\n\n  <ul><li>a</li><li>b</li></ul>"}"#;
+        assert_eq!(render(data, "{{html_to_text h}}"), "Titel Zeile 1 Zeile 2 a b");
+        assert_eq!(render(r#"{"h": "fo<b>o</b>bar"}"#, "{{html_to_text h}}"), "foobar");
+    }
+
+    #[test]
+    fn html_to_text_drops_script_and_style(){
+        let data = r#"{"h": "<style>p{color:red}</style>A<script>alert(1)</script>B"}"#;
+        assert_eq!(render(data, "{{html_to_text h}}"), "AB");
+    }
+
+    #[test]
+    fn html_to_text_handles_plain_text_and_missing_values(){
+        assert_eq!(render(r#"{"h": "Nur Text"}"#, "{{html_to_text h}}"), "Nur Text");
+        assert_eq!(render(r#"{"h": null}"#, "{{html_to_text h}}"), "");
+        assert_eq!(render(r#"{}"#, "{{html_to_text missing}}"), "");
+        let mut hb = Handlebars::new();
+        register_helpers(&mut hb);
+        assert!(hb.render_template("{{html_to_text}}", &JsonValue::Null).is_err());
     }
 }

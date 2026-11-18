@@ -15,9 +15,7 @@ vb-exchange = {git = "https://github.com/Verfassungsblog/Verfassungsbooks-Exchan
 uuid = { version = "1.12.1", features = ["v4"] }
 async-recursion = "1.1.1"
 handlebars = { version = "6.3.0", features = ["dir_source"] }
-qrcode = "0.14"
-image = "0.25.2"
-base64 = "0.22.0"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 html5ever = "0.35.0"
 markup5ever_rcdom = "0.35.0"
 svg = "0.18.0"
